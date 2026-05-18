@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchHistory, usePanes, type HistoryEntry } from "../state/panes.ts";
 import { useConfirm } from "../state/confirm.ts";
+import sherlockIcon from "../sherlock-icon.png";
 
 interface Props {
   collapsed: boolean;
@@ -255,7 +256,10 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
     <div className="history-sidebar">
       <div className="sidebar-brand">
         <div className="sidebar-brand-row">
-          <span className="sidebar-brand-name">Sherlock</span>
+          <span className="sidebar-brand-title">
+            <img src={sherlockIcon} alt="" className="sidebar-brand-icon" />
+            <span className="sidebar-brand-name">Sherlock</span>
+          </span>
           <button
             className="sidebar-icon-btn"
             onClick={onToggle}
