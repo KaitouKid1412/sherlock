@@ -95,6 +95,7 @@ echo "server pid=$SERVER_PID"
 # Background self-update for the NEXT launch (does not affect this one).
 (
   echo "[$(date)] update: starting"
+  old_head="$(git rev-parse HEAD 2>/dev/null || echo none)"
   if ! git fetch origin release 2>/dev/null; then
     echo "[$(date)] update: fetch failed (offline or no release branch yet); skipping"
     exit 0
@@ -105,12 +106,22 @@ echo "server pid=$SERVER_PID"
     echo "[$(date)] update: reset failed; skipping"
     exit 0
   fi
+  new_head="$(git rev-parse HEAD 2>/dev/null || echo none)"
+  if [ "$old_head" = "$new_head" ]; then
+    echo "[$(date)] update: already up to date ($new_head)"
+    exit 0
+  fi
+  echo "[$(date)] update: $old_head -> $new_head"
   new_lock="$(shasum -a 256 package-lock.json 2>/dev/null | cut -d' ' -f1)"
   new_bundle_hash="$(find "$APP_DIR/packaging/Sherlock.app" -type f 2>/dev/null | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
   if [ "$old_lock" != "$new_lock" ]; then
     echo "[$(date)] update: package-lock changed, running npm install"
     npm install --silent 2>&1 || echo "[$(date)] update: npm install failed"
   fi
+  # Rebuild the frontend so new web/ code is actually served on next launch.
+  # `dist/` is gitignored, so `git reset` doesn't touch it — we must rebuild.
+  echo "[$(date)] update: rebuilding frontend"
+  npm run build --silent 2>&1 || echo "[$(date)] update: build failed"
   # Refresh /Applications/Sherlock.app when the bundle (icon, Info.plist, MacOS script) changed.
   if [ "$old_bundle_hash" != "$new_bundle_hash" ] && [ -d "$APP_DIR/packaging/Sherlock.app" ]; then
     echo "[$(date)] update: .app bundle changed, refreshing /Applications/Sherlock.app"
