@@ -92,6 +92,17 @@ fastify.get("/api/version", async () => {
   return { booted: BOOTED_SHA, head, restartRequired: requiresRestart(changed) };
 });
 
+// Quit: shut down the server process. The .app launcher is a one-shot script
+// that exits after spawning npm start, so Cmd+Q / Force Quit on macOS doesn't
+// reach this process. This endpoint gives the UI a clean way to stop it.
+fastify.post("/api/quit", async (_req, reply) => {
+  reply.send({ ok: true });
+  setTimeout(() => {
+    fastify.log.info("quit requested; exiting");
+    process.exit(0);
+  }, 200);
+});
+
 // Restart: detach a relauncher, then exit. The frontend handles polling for
 // the new server to come up and reloads itself.
 fastify.post("/api/restart", async (_req, reply) => {

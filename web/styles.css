@@ -548,6 +548,29 @@ html, body, #root {
   font-size: 12px;
   color: var(--text-dim);
 }
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border);
+}
+.sidebar-quit-btn {
+  width: 100%;
+  background: rgba(210, 117, 117, 0.1);
+  color: #d27575;
+  border: 1px solid rgba(210, 117, 117, 0.5);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.sidebar-quit-btn:hover {
+  color: #ffffff;
+  background: #c14747;
+  border-color: #c14747;
+}
 .sidebar-new-btn {
   background: var(--accent-strong);
   color: white;

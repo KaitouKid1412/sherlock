@@ -98,6 +98,13 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
     const tick = async () => {
       try {
         const res = await fetch("/api/version");
+        // 404 means the running server predates this endpoint — by definition
+        // a restart is needed to load the new server code. Treat it as a
+        // pending update so the user sees the Restart banner and can migrate.
+        if (res.status === 404) {
+          if (!cancelled) setVersionStatus({ booted: "legacy", head: "current", restartRequired: true });
+          return;
+        }
         if (!res.ok) return;
         const data = (await res.json()) as VersionStatus;
         if (!cancelled) setVersionStatus(data);
@@ -166,6 +173,21 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
       confirmLabel: "New conversation",
       onConfirm: async () => {
         await newConversation();
+      },
+    });
+  };
+
+  const handleQuit = () => {
+    ask({
+      message:
+        "Quit Sherlock? The local server will stop and any open Sherlock tabs will go offline. Your conversations stay saved on disk and you can reopen them by launching Sherlock again.",
+      confirmLabel: "Quit Sherlock",
+      onConfirm: async () => {
+        try {
+          await fetch("/api/quit", { method: "POST" });
+        } catch {
+          /* expected — server exits mid-response */
+        }
       },
     });
   };
@@ -308,6 +330,15 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
           })}
         </ul>
       )}
+      <div className="sidebar-footer">
+        <button
+          className="sidebar-quit-btn"
+          onClick={handleQuit}
+          title="Stop the Sherlock server. Conversations stay saved on disk."
+        >
+          Quit Sherlock
+        </button>
+      </div>
     </div>
     </>
   );
