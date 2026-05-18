@@ -49,6 +49,7 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
   const [versionStatus, setVersionStatus] = useState<VersionStatus | null>(null);
   const [applyMode, setApplyMode] = useState<ApplyMode>("idle");
+  const [quitting, setQuitting] = useState<boolean>(false);
   const [now, setNow] = useState<number>(Date.now());
   const currentSessionId = usePanes((s) => s.sessionId);
   const panes = usePanes((s) => s.panes);
@@ -183,11 +184,19 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
         "Quit Sherlock? The local server will stop and any open Sherlock tabs will go offline. Your conversations stay saved on disk and you can reopen them by launching Sherlock again.",
       confirmLabel: "Quit Sherlock",
       onConfirm: async () => {
+        setQuitting(true);
         try {
           await fetch("/api/quit", { method: "POST" });
         } catch {
           /* expected — server exits mid-response */
         }
+        // Browsers refuse window.close() on tabs the user opened directly
+        // (security), so this works only for the script-spawned tab the
+        // launcher's `open` command created. Try it anyway; the overlay
+        // below handles the case where the browser refuses.
+        setTimeout(() => {
+          try { window.close(); } catch { /* refused */ }
+        }, 400);
       },
     });
   };
@@ -198,6 +207,15 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
         <div className="sherlock-restart-spinner" />
         <div className="sherlock-restart-title">Restarting Sherlock…</div>
         <div className="sherlock-restart-sub">Reloading once the new server is up.</div>
+      </div>
+    </div>
+  ) : null;
+
+  const quitOverlay = quitting ? (
+    <div className="sherlock-restart-overlay">
+      <div className="sherlock-restart-card">
+        <div className="sherlock-restart-title">Sherlock has stopped</div>
+        <div className="sherlock-restart-sub">You can close this tab. Launch Sherlock again from Applications when you want it back.</div>
       </div>
     </div>
   ) : null;
@@ -225,6 +243,7 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
           </button>
         </div>
         {restartOverlay}
+        {quitOverlay}
       </>
     );
   }
@@ -232,6 +251,7 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
   return (
     <>
     {restartOverlay}
+    {quitOverlay}
     <div className="history-sidebar">
       <div className="sidebar-brand">
         <div className="sidebar-brand-row">
