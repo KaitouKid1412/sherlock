@@ -81,15 +81,44 @@ run_background_update() {
     trap 'rmdir "$update_lock" 2>/dev/null || true' EXIT
     echo "[$(date)] update: starting"
     old_head="$(git rev-parse HEAD 2>/dev/null || echo none)"
-    if ! git fetch origin release 2>/dev/null; then
-      echo "[$(date)] update: fetch failed (offline or no release branch yet); skipping"
+    # Stale .git/index.lock can be left behind if a previous git operation
+    # was killed (interrupted launcher, system sleep mid-fetch). Clean it up
+    # if it's older than 60 seconds so we don't get stuck forever.
+    if [ -f "$APP_DIR/.git/index.lock" ]; then
+      lock_age=$(( $(date +%s) - $(stat -f %m "$APP_DIR/.git/index.lock" 2>/dev/null || echo 0) ))
+      if [ "$lock_age" -gt 60 ]; then
+        echo "[$(date)] update: removing stale .git/index.lock (age=${lock_age}s)"
+        rm -f "$APP_DIR/.git/index.lock"
+      fi
+    fi
+    if ! fetch_err="$(git fetch origin release 2>&1)"; then
+      echo "[$(date)] update: fetch failed; skipping"
+      echo "[$(date)] update:   $fetch_err"
       exit 0
     fi
     old_lock="$(shasum -a 256 package-lock.json 2>/dev/null | cut -d' ' -f1)"
     old_bundle_hash="$(find "$APP_DIR/packaging/Sherlock.app" -type f 2>/dev/null | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
-    if ! git reset --hard origin/release 2>/dev/null; then
+    if ! reset_err="$(git reset --hard origin/release 2>&1)"; then
       echo "[$(date)] update: reset failed; skipping"
-      exit 0
+      echo "[$(date)] update:   $reset_err"
+      # Try to recover from common failure modes
+      if echo "$reset_err" | grep -qi "index.lock"; then
+        echo "[$(date)] update: detected lock file in error; removing and retrying"
+        rm -f "$APP_DIR/.git/index.lock"
+        if ! reset_err2="$(git reset --hard origin/release 2>&1)"; then
+          echo "[$(date)] update: retry also failed: $reset_err2"
+          exit 0
+        fi
+      elif echo "$reset_err" | grep -qi "local changes"; then
+        echo "[$(date)] update: detected dirty working tree; stashing and retrying"
+        git stash push -u -m "auto-stash-pre-update-$(date +%s)" 2>&1 || true
+        if ! reset_err2="$(git reset --hard origin/release 2>&1)"; then
+          echo "[$(date)] update: retry also failed: $reset_err2"
+          exit 0
+        fi
+      else
+        exit 0
+      fi
     fi
     new_head="$(git rev-parse HEAD 2>/dev/null || echo none)"
     if [ "$old_head" = "$new_head" ]; then
