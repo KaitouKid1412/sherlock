@@ -86,8 +86,25 @@ function openBrowser(url: string) {
 }
 
 function startIdleWatcher() {
+  const TICK_MS = 5_000;
+  // If the interval was paused (laptop sleep, debugger pause, system stall)
+  // and fires much later than scheduled, the apparent gap since the last
+  // heartbeat will look huge — but that's clock drift, not real idle. Treat
+  // any tick gap above this threshold as a probable pause and reset the
+  // idle clock to give the frontend its normal grace window to reconnect.
+  const TIME_JUMP_THRESHOLD_MS = 30_000;
+  let lastTickAt = Date.now();
   setInterval(() => {
     const now = Date.now();
+    const tickGap = now - lastTickAt;
+    lastTickAt = now;
+
+    if (tickGap > TIME_JUMP_THRESHOLD_MS) {
+      fastify.log.info(`time jump detected (${Math.round(tickGap / 1000)}s); resetting idle timer`);
+      if (lastHeartbeatAt > 0) lastHeartbeatAt = now;
+      return;
+    }
+
     if (lastHeartbeatAt === 0) {
       if (now - serverStartedAt > STARTUP_GRACE_MS) {
         fastify.log.info("no tab connected within startup grace; shutting down");
@@ -97,7 +114,7 @@ function startIdleWatcher() {
       fastify.log.info("no heartbeat for 30s; shutting down");
       process.exit(0);
     }
-  }, 5_000).unref();
+  }, TICK_MS).unref();
 }
 
 try {

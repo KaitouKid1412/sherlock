@@ -47,7 +47,17 @@ export function App() {
     };
     beat();
     const id = window.setInterval(beat, 10_000);
-    return () => window.clearInterval(id);
+    // After laptop wake / tab focus, fire an immediate heartbeat so the server
+    // sees us alive within ~ms instead of waiting up to 10s for the next tick.
+    // Pairs with the server-side time-jump detection.
+    const onVisible = () => { if (!document.hidden) beat(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
   }, []);
 
   useEffect(() => {

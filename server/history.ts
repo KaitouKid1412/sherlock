@@ -2,12 +2,30 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-function encodeCwdToProjectDir(cwd: string): string {
-  return cwd.replace(/\//g, "-");
-}
+const PROJECTS_BASE = path.join(os.homedir(), ".claude", "projects");
 
-function projectDir(cwd: string): string {
-  return path.join(os.homedir(), ".claude", "projects", encodeCwdToProjectDir(cwd));
+// Claude Code encodes cwd by replacing `/` AND space (and likely other
+// non-word chars) with `-`, but we don't need to match it exactly: we just
+// scan for any project dir whose last segment is `sherlock` (case-insensitive)
+// and treat them all as Sherlock's history. That handles both:
+//   - the dev checkout    (/Users/x/sherlock          → -Users-x-sherlock)
+//   - the installed .app  (/Users/x/Library/Application Support/Sherlock
+//                          → -Users-x-Library-Application-Support-Sherlock)
+// plus any future install path the user might use.
+async function findSherlockProjectDirs(): Promise<string[]> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(PROJECTS_BASE);
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((name) => {
+      const segments = name.split("-").filter(Boolean);
+      const last = segments[segments.length - 1] ?? "";
+      return last.toLowerCase() === "sherlock";
+    })
+    .map((name) => path.join(PROJECTS_BASE, name));
 }
 
 export interface HistoryEntry {
@@ -40,15 +58,13 @@ interface RawLine {
   };
 }
 
-export async function listHistory(cwd: string): Promise<HistoryEntry[]> {
-  const dir = projectDir(cwd);
+async function readEntriesFromDir(dir: string): Promise<HistoryEntry[]> {
   let entries: string[];
   try {
     entries = await fs.readdir(dir);
   } catch {
     return [];
   }
-
   const results: HistoryEntry[] = [];
   for (const f of entries) {
     if (!f.endsWith(".jsonl")) continue;
@@ -100,20 +116,44 @@ export async function listHistory(cwd: string): Promise<HistoryEntry[]> {
       byteSize: stat.size,
     });
   }
-  results.sort((a, b) => b.lastModifiedAt - a.lastModifiedAt);
   return results;
 }
 
-export async function loadSession(cwd: string, sessionId: string): Promise<LoadedSession | null> {
-  const dir = projectDir(cwd);
-  const fullPath = path.join(dir, sessionId + ".jsonl");
-  let raw: string;
-  try {
-    raw = await fs.readFile(fullPath, "utf8");
-  } catch {
-    return null;
+export async function listHistory(_cwd: string): Promise<HistoryEntry[]> {
+  // _cwd is ignored — we scan ALL Sherlock project dirs and merge so the
+  // sidebar shows history regardless of which cwd Sherlock was launched in.
+  const dirs = await findSherlockProjectDirs();
+  const perDir = await Promise.all(dirs.map(readEntriesFromDir));
+  const all: HistoryEntry[] = [];
+  const seen = new Set<string>();
+  for (const list of perDir) {
+    for (const entry of list) {
+      if (seen.has(entry.sessionId)) continue;
+      seen.add(entry.sessionId);
+      all.push(entry);
+    }
   }
+  all.sort((a, b) => b.lastModifiedAt - a.lastModifiedAt);
+  return all;
+}
 
+export async function loadSession(_cwd: string, sessionId: string): Promise<LoadedSession | null> {
+  // Search every Sherlock project dir for this sessionId.
+  const dirs = await findSherlockProjectDirs();
+  for (const dir of dirs) {
+    const fullPath = path.join(dir, sessionId + ".jsonl");
+    let raw: string;
+    try {
+      raw = await fs.readFile(fullPath, "utf8");
+    } catch {
+      continue;
+    }
+    return parseSessionJsonl(sessionId, raw);
+  }
+  return null;
+}
+
+function parseSessionJsonl(sessionId: string, raw: string): LoadedSession {
   // Build (user → all-following-assistants-until-next-user) groups.
   // Claude Code emits multiple assistant entries per turn when extended
   // thinking or tool-use is involved; we concatenate them all so the
