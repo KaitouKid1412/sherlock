@@ -65,14 +65,23 @@ function broadcast(ev: ServerSentEvent): void {
   }
 }
 
-function createPane(currentNodeId: string | null): PaneState {
+function createPane(currentNodeId: string | null, afterPaneId?: string): PaneState {
   const pane: PaneState = {
     paneId: randomUUID(),
     rootSessionId: state.rootSessionId,
     currentNodeId,
     createdAt: Date.now(),
   };
-  state.panes.push(pane);
+  if (afterPaneId) {
+    const idx = state.panes.findIndex((p) => p.paneId === afterPaneId);
+    if (idx >= 0) {
+      state.panes.splice(idx + 1, 0, pane);
+    } else {
+      state.panes.push(pane);
+    }
+  } else {
+    state.panes.push(pane);
+  }
   state.eventLog.set(pane.paneId, []);
   return pane;
 }
@@ -220,8 +229,12 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
     return { rootSessionId, rootNodeId: root.nodeId, paneId: pane.paneId };
   });
 
-  // Send a follow-up in this pane: creates a child of pane.currentNodeId,
-  // auto-navigates the pane to the new child, runs Claude Code.
+  // Send a follow-up: creates a child of the given parent node and runs
+  // Claude Code. Does NOT mutate the source pane's currentNodeId — the
+  // caller decides whether to navigate this pane to the child ("open here")
+  // or spawn a new pane viewing the child ("open in new pane"). Keeping the
+  // source pane put preserves the multi-column workflow: sibling branches
+  // accumulate as adjacent panes instead of overwriting each other.
   fastify.post<{ Params: { id: string }; Body: { prompt?: string; parentNodeId?: string } }>(
     "/api/panes/:id/send",
     async (req, reply) => {
@@ -238,7 +251,6 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
       const parent = state.tree.nodes[parentNodeId];
       if (!parent) { reply.code(404); return { error: "parent node not in tree" }; }
       const child = await addChildNode(parentNodeId, prompt);
-      pane.currentNodeId = child.nodeId;
       broadcast({ type: "node_added", node: child });
       broadcast({ type: "turn_started", turnId: child.nodeId, prompt: child.prompt, status: child.status, nodeId: child.nodeId });
       if (state.running.size === 0) {
@@ -266,16 +278,18 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
     },
   );
 
-  // Spawn a new pane viewing the same tree. Used when "Explain" wants to
-  // open a child node in a sibling column instead of replacing the current
-  // pane's view. (Optional; the default Explain UX replaces in place.)
-  fastify.post<{ Body: { currentNodeId?: string } }>(
+  // Spawn a new pane viewing a specific node of the current tree. This is
+  // how "open in new column" works in the tree world: pass the node the new
+  // pane should display, and optionally the source pane (afterPaneId) so the
+  // new column gets inserted immediately to the right of the click target
+  // instead of at the end of the row.
+  fastify.post<{ Body: { currentNodeId?: string; afterPaneId?: string } }>(
     "/api/panes",
     async (req, reply) => {
       if (!state.tree) { reply.code(409); return { error: "no conversation loaded" }; }
       const startNodeId = req.body?.currentNodeId ?? state.tree.rootNodeId;
       if (!state.tree.nodes[startNodeId]) { reply.code(404); return { error: "currentNodeId not in tree" }; }
-      const pane = createPane(startNodeId);
+      const pane = createPane(startNodeId, req.body?.afterPaneId);
       return { paneId: pane.paneId, currentNodeId: pane.currentNodeId };
     },
   );

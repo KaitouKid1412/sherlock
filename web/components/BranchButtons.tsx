@@ -1,9 +1,12 @@
 import type { TreeNodePublic } from "../../types/events.ts";
+import type { OpenMode } from "../state/panes.ts";
 import { useConfirm } from "../state/confirm.ts";
 
 interface Props {
   children: TreeNodePublic[];
-  onNavigate: (nodeId: string) => void;
+  // Primary main click + the secondary collapse button both route here, with
+  // the mode set accordingly. Default action (clicking the row) is "new-pane".
+  onOpen: (nodeId: string, mode: OpenMode) => void;
   onDelete: (nodeId: string) => void;
 }
 
@@ -12,7 +15,7 @@ function truncate(s: string, n: number): string {
   return s.slice(0, n - 1).trimEnd() + "…";
 }
 
-export function BranchButtons({ children, onNavigate, onDelete }: Props) {
+export function BranchButtons({ children, onOpen, onDelete }: Props) {
   const ask = useConfirm((s) => s.ask);
   if (children.length === 0) return null;
   const handleDelete = (node: TreeNodePublic) => {
@@ -33,11 +36,19 @@ export function BranchButtons({ children, onNavigate, onDelete }: Props) {
         <div key={c.nodeId} className="branch-button-row">
           <button
             className="branch-button"
-            title={c.prompt}
-            onClick={() => onNavigate(c.nodeId)}
+            title={c.prompt + "\n\nClick: open in new column\nShift-click: open here (collapse current)"}
+            onClick={(e) => onOpen(c.nodeId, e.shiftKey ? "here" : "new-pane")}
           >
             <span className="branch-button-arrow">→</span>
             <span className="branch-button-text">{truncate(c.prompt, 120)}</span>
+          </button>
+          <button
+            className="branch-here"
+            title="Open here (collapse this column)"
+            onClick={(e) => { e.stopPropagation(); onOpen(c.nodeId, "here"); }}
+            aria-label="Open here"
+          >
+            ↳
           </button>
           <button
             className="branch-delete"

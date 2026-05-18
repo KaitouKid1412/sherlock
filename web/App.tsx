@@ -76,6 +76,10 @@ export function App() {
     await startConversation(prompt);
   };
 
+  // The InputBar in the welcome screen is mode-agnostic — there's no pane
+  // to open here vs new-pane against. Just start the conversation.
+  const handleWelcomeSend = (_mode: "new-pane" | "here") => handleStart();
+
   // Empty state: no conversation loaded at all. Show the welcome composer.
   const noConversation = !tree || panes.length === 0;
 
@@ -97,7 +101,8 @@ export function App() {
             <InputBar
               value={draft}
               onChange={setDraft}
-              onSend={handleStart}
+              onSend={handleWelcomeSend}
+              hideHereButton={true}
             />
           </div>
         </div>

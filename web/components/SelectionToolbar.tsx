@@ -146,8 +146,9 @@ export function SelectionToolbar() {
     window.getSelection()?.removeAllRanges();
     // sendInPane uses the pane's currentNodeId as the parent — exactly
     // what we want: the new child node hangs off the response the user
-    // was reading.
-    await sendInPane(pane.paneId, finalPrompt, pane.currentNodeId ?? undefined);
+    // was reading. Default to "new-pane" so the explanation opens beside
+    // the source response instead of replacing it.
+    await sendInPane(pane.paneId, finalPrompt, "new-pane", pane.currentNodeId ?? undefined);
   };
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

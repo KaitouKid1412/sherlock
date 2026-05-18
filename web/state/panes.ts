@@ -26,6 +26,14 @@ export interface HistoryEntry {
   byteSize: number;
 }
 
+// How a new child should be displayed when it's created (via Send) OR how
+// an existing branch should be displayed when clicked.
+//   "new-pane": spawn a new column to the right of the source pane.
+//   "here":     navigate the source pane (collapse the current path).
+// Default everywhere is "new-pane" — it preserves the sibling branches you'd
+// otherwise lose visibility of, which is the whole point of multi-column.
+export type OpenMode = "new-pane" | "here";
+
 interface PaneStore {
   rootSessionId: string | null;
   tree: ConversationTreePublic | null;
@@ -41,8 +49,15 @@ interface PaneStore {
   applyEvent: (paneId: string, ev: ServerSentEvent) => void;
   registerPane: (paneId: string, currentNodeId: string | null) => void;
   startConversation: (prompt: string) => Promise<string | null>;
-  sendInPane: (paneId: string, prompt: string, parentNodeId?: string) => Promise<void>;
+  // sendInPane creates a child of the pane's currentNodeId (or parentNodeId
+  // if explicitly passed) and either spawns a new pane viewing it or
+  // navigates the source pane to it, per `mode`.
+  sendInPane: (paneId: string, prompt: string, mode: OpenMode, parentNodeId?: string) => Promise<void>;
+  // openBranch: navigate to an EXISTING node (no new child). Mode chooses
+  // new-pane vs replace-here.
+  openBranch: (sourcePaneId: string, nodeId: string, mode: OpenMode) => Promise<void>;
   navigatePane: (paneId: string, nodeId: string) => Promise<void>;
+  openInNewPane: (currentNodeId: string, afterPaneId?: string) => Promise<string | null>;
   closePane: (paneId: string) => Promise<void>;
   deleteNode: (nodeId: string) => Promise<void>;
   setError: (msg: string | null) => void;
@@ -255,7 +270,7 @@ export const usePanes = create<PaneStore>((set, get) => ({
     return data.paneId;
   },
 
-  sendInPane: async (paneId, prompt, parentNodeId) => {
+  sendInPane: async (paneId, prompt, mode, parentNodeId) => {
     const res = await fetch(`/api/panes/${paneId}/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -266,14 +281,19 @@ export const usePanes = create<PaneStore>((set, get) => ({
       return;
     }
     const data = (await res.json()) as { nodeId: string };
-    // Auto-navigate the pane to the new child. Server already did this in
-    // its state; we mirror it client-side so the UI updates immediately
-    // (don't wait for /api/state poll).
-    set((state) => ({
-      panes: state.panes.map((p) =>
-        p.paneId === paneId ? { ...p, currentNodeId: data.nodeId } : p,
-      ),
-    }));
+    if (mode === "here") {
+      await get().navigatePane(paneId, data.nodeId);
+    } else {
+      await get().openInNewPane(data.nodeId, paneId);
+    }
+  },
+
+  openBranch: async (sourcePaneId, nodeId, mode) => {
+    if (mode === "here") {
+      await get().navigatePane(sourcePaneId, nodeId);
+    } else {
+      await get().openInNewPane(nodeId, sourcePaneId);
+    }
   },
 
   navigatePane: async (paneId, nodeId) => {
@@ -289,6 +309,35 @@ export const usePanes = create<PaneStore>((set, get) => ({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ nodeId }),
     }).catch(() => {});
+  },
+
+  openInNewPane: async (currentNodeId, afterPaneId) => {
+    const res = await fetch("/api/panes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ currentNodeId, afterPaneId }),
+    });
+    if (!res.ok) {
+      set({ error: `open in new pane failed: ${await res.text()}` });
+      return null;
+    }
+    const data = (await res.json()) as { paneId: string };
+    // Mirror the server's insertion order client-side so the new column
+    // appears immediately to the right of its source pane.
+    set((state) => {
+      if (state.panes.some((p) => p.paneId === data.paneId)) return {};
+      const next = state.panes.slice();
+      const idx = afterPaneId ? next.findIndex((p) => p.paneId === afterPaneId) : -1;
+      const newPane: UiPane = {
+        paneId: data.paneId,
+        rootSessionId: state.rootSessionId,
+        currentNodeId,
+      };
+      if (idx >= 0) next.splice(idx + 1, 0, newPane);
+      else next.push(newPane);
+      return { panes: next };
+    });
+    return data.paneId;
   },
 
   closePane: async (paneId) => {

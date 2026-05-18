@@ -906,6 +906,22 @@ html, body, #root {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.branch-here {
+  flex: 0 0 auto;
+  width: 32px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+}
+.branch-here:hover {
+  background: var(--bg-input);
+  color: var(--accent);
+  border-color: var(--accent);
+}
 .branch-delete {
   flex: 0 0 auto;
   width: 32px;

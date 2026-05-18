@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  usePanes, selectPath, selectChildren, type UiToolCall,
+  usePanes, selectPath, selectChildren, type UiToolCall, type OpenMode,
 } from "../state/panes.ts";
 import { openPaneStream } from "../lib/sse-client.ts";
 import { MarkdownMessage } from "./MarkdownMessage.tsx";
@@ -21,6 +21,7 @@ export function PaneView({ paneId }: Props) {
   const nodeToolCalls = usePanes((s) => s.nodeToolCalls);
   const applyEvent = usePanes((s) => s.applyEvent);
   const sendInPane = usePanes((s) => s.sendInPane);
+  const openBranch = usePanes((s) => s.openBranch);
   const navigatePane = usePanes((s) => s.navigatePane);
   const closePane = usePanes((s) => s.closePane);
   const deleteNode = usePanes((s) => s.deleteNode);
@@ -65,11 +66,11 @@ export function PaneView({ paneId }: Props) {
   const ancestors = path.slice(0, -1);  // everything above the current node
   const isStreaming = currentNode.status === "streaming" || currentNode.status === "queued";
 
-  const handleSend = async () => {
+  const handleSend = async (mode: OpenMode) => {
     const prompt = draft.trim();
     if (!prompt) return;
     setDraft("");
-    await sendInPane(paneId, prompt, currentNode.nodeId);
+    await sendInPane(paneId, prompt, mode, currentNode.nodeId);
   };
 
   return (
@@ -94,7 +95,7 @@ export function PaneView({ paneId }: Props) {
         />
         <BranchButtons
           children={children}
-          onNavigate={(id) => navigatePane(paneId, id)}
+          onOpen={(id, mode) => openBranch(paneId, id, mode)}
           onDelete={(id) => deleteNode(id)}
         />
       </div>
@@ -102,8 +103,7 @@ export function PaneView({ paneId }: Props) {
         value={draft}
         onChange={setDraft}
         onSend={handleSend}
-        placeholder={isStreaming ? "Waiting for response…" : "Ask a follow-up — creates a child of this response."}
-        disabled={isStreaming}
+        placeholder="Ask a follow-up — opens in a new column by default."
       />
     </div>
   );
