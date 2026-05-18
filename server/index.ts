@@ -144,7 +144,14 @@ registerPaneRoutes(fastify);
 
 if (IS_PROD) {
   const distPath = resolve(__dirname, "../dist");
-  await fastify.register(fastifyStatic, { root: distPath, wildcard: false });
+  // wildcard: true so @fastify/static resolves files at REQUEST time, not at
+  // boot. With wildcard:false, the plugin walks dist/ once and registers
+  // routes for each filename it sees — meaning a rebuild that produces new
+  // hashed asset names (every Vite build does) is invisible to an already-
+  // running server, and the new index.html's <script src="/assets/index-X.js">
+  // would fall through to the SPA fallback and return HTML where JS was
+  // expected, yielding a white screen until the server itself was restarted.
+  await fastify.register(fastifyStatic, { root: distPath, wildcard: true });
   fastify.setNotFoundHandler((req, reply) => {
     if (req.url.startsWith("/api/")) {
       reply.code(404).send({ error: "not found" });
