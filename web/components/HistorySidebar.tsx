@@ -19,9 +19,12 @@ function formatRelative(ms: number): string {
   return new Date(ms).toLocaleDateString();
 }
 
+type UpdateState = "idle" | "updating" | "updated";
+
 export function HistorySidebar({ collapsed, onToggle }: Props) {
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [updateState, setUpdateState] = useState<UpdateState>("idle");
   const currentSessionId = usePanes((s) => s.sessionId);
   const panes = usePanes((s) => s.panes);
   const loadHistorySession = usePanes((s) => s.loadHistorySession);
@@ -32,6 +35,28 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
     if (collapsed) return;
     void fetchHistory().then(setEntries);
   }, [collapsed, currentSessionId]);
+
+  // Poll update status so the sidebar reflects when the launcher's
+  // background self-update is in flight or has just finished.
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch("/api/update-status");
+        if (!res.ok) return;
+        const data = (await res.json()) as { state: UpdateState };
+        if (!cancelled) setUpdateState(data.state);
+      } catch {
+        /* ignore — server may be momentarily unreachable */
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
 
   const handleLoad = async (sessionId: string) => {
     if (sessionId === currentSessionId) return;
@@ -91,6 +116,20 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
             ‹
           </button>
         </div>
+        {updateState !== "idle" ? (
+          <span
+            className={`sidebar-update-status sidebar-update-status--${updateState}`}
+            title={updateState === "updating" ? "Sherlock is pulling the latest release" : "Update applied — fully active on next launch"}
+          >
+            {updateState === "updating" ? (
+              <>
+                <span className="sidebar-update-dot" aria-hidden /> Updating…
+              </>
+            ) : (
+              <>✓ Updated</>
+            )}
+          </span>
+        ) : null}
         {currentSessionId ? (
           <span className="sidebar-brand-session" title={currentSessionId}>
             session {currentSessionId.slice(0, 8)}

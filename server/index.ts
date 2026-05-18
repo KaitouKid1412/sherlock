@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { exec } from "node:child_process";
 import { registerPaneRoutes } from "./panes.ts";
@@ -15,6 +15,7 @@ const PORT_CANDIDATES = process.env.PORT
 
 const SUPPORT_DIR = resolve(homedir(), "Library/Application Support/Sherlock");
 const PORT_FILE = resolve(SUPPORT_DIR, "port.txt");
+const UPDATE_STATUS_FILE = resolve(SUPPORT_DIR, ".update-status");
 
 const fastify = Fastify({ logger: { level: "info" } });
 
@@ -33,6 +34,26 @@ const serverStartedAt = Date.now();
 fastify.post("/api/heartbeat", async () => {
   lastHeartbeatAt = Date.now();
   return { ok: true };
+});
+
+// Update status: launcher.sh writes this file as it runs the background update.
+// We expose it so the sidebar can show "Updating..." / "Updated" indicators.
+fastify.get("/api/update-status", async () => {
+  try {
+    const content = await readFile(UPDATE_STATUS_FILE, "utf8");
+    const data = JSON.parse(content) as { state?: string; at?: number };
+    const state = data.state;
+    const ageMs = Date.now() - (data.at ?? 0) * 1000;
+    if (state === "updating" && ageMs < 5 * 60_000) {
+      return { state: "updating" };
+    }
+    if (state === "updated" && ageMs < 30_000) {
+      return { state: "updated" };
+    }
+    return { state: "idle" };
+  } catch {
+    return { state: "idle" };
+  }
 });
 
 registerPaneRoutes(fastify);

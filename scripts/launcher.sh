@@ -122,6 +122,8 @@ echo "server pid=$SERVER_PID"
     exit 0
   fi
   echo "[$(date)] update: $old_head -> $new_head"
+  # Mark "updating" so the sidebar can show a status indicator.
+  printf '{"state":"updating","at":%s}\n' "$(date +%s)" > "$APP_DIR/.update-status"
   new_lock="$(shasum -a 256 package-lock.json 2>/dev/null | cut -d' ' -f1)"
   new_bundle_hash="$(find "$APP_DIR/packaging/Sherlock.app" -type f 2>/dev/null | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
   if [ "$old_lock" != "$new_lock" ]; then
@@ -147,6 +149,8 @@ echo "server pid=$SERVER_PID"
       echo "[$(date)] update: .app bundle refresh failed (no write access?); leaving previous version"
     fi
   fi
+  # Mark "updated" so the sidebar can switch from "Updating..." to "Updated".
+  printf '{"state":"updated","at":%s,"head":"%s"}\n' "$(date +%s)" "$new_head" > "$APP_DIR/.update-status"
   echo "[$(date)] update: complete (applies on next launch)"
 ) >>"$APP_DIR/update.log" 2>&1 &
 disown
