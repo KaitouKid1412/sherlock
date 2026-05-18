@@ -400,14 +400,19 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
       for (const [nodeId, running] of state.running.entries()) {
         if (removedIds.has(nodeId)) { running.kill(); state.running.delete(nodeId); }
       }
-      // Repoint any pane that was viewing a removed node to its closest
-      // surviving ancestor (or the tree root as fallback).
-      for (const pane of state.panes) {
-        if (pane.currentNodeId && removedIds.has(pane.currentNodeId)) {
-          let cur: TreeNodePublic | undefined = target.parentNodeId ? tree.nodes[target.parentNodeId] : undefined;
-          pane.currentNodeId = cur?.nodeId ?? tree.rootNodeId;
-        }
+      // Close any pane that was viewing a node inside the deleted subtree
+      // — including the deleted node itself. The user expects the column to
+      // disappear, not silently re-anchor somewhere they didn't ask for.
+      const panesToClose = state.panes.filter(
+        (p) => p.currentNodeId !== null && removedIds.has(p.currentNodeId),
+      );
+      for (const pane of panesToClose) {
+        state.subscribers.get(pane.paneId)?.forEach((s) => s.close());
+        state.subscribers.delete(pane.paneId);
+        state.eventLog.delete(pane.paneId);
       }
+      const closedIds = new Set(panesToClose.map((p) => p.paneId));
+      state.panes = state.panes.filter((p) => !closedIds.has(p.paneId));
       // Delete the underlying Claude Code .jsonl for any session that's now
       // unreferenced. The root session stays because deleting it would
       // effectively delete the conversation; that's handled by /new.
