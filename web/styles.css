@@ -906,7 +906,7 @@ html, body, #root {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.branch-here {
+.branch-newpane {
   flex: 0 0 auto;
   width: 32px;
   background: transparent;
@@ -917,7 +917,7 @@ html, body, #root {
   font-size: 14px;
   transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
 }
-.branch-here:hover {
+.branch-newpane:hover {
   background: var(--bg-input);
   color: var(--accent);
   border-color: var(--accent);

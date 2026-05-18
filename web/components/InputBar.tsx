@@ -1,25 +1,25 @@
 import { type KeyboardEvent } from "react";
-import type { OpenMode } from "../state/panes.ts";
 
 interface Props {
-  // Primary action: spawn the response in a new column to the right.
-  onSend: (mode: OpenMode) => void | Promise<void>;
+  // Send the draft. `forceNewPane` is true when the user explicitly asked
+  // to open the response in a new pane (shift-modifier); otherwise the
+  // caller's auto-mode picks the right placement.
+  onSend: (forceNewPane: boolean) => void | Promise<void>;
   placeholder?: string;
   value: string;
   onChange: (v: string) => void;
   disabled?: boolean;
-  // When true (the initial-conversation composer in the welcome screen),
-  // there's no "current pane" yet so the "send here" option doesn't apply.
-  hideHereButton?: boolean;
+  // The welcome composer has no parent pane yet, so the new-pane override
+  // doesn't apply — hide it.
+  hideNewPaneButton?: boolean;
 }
 
-export function InputBar({ onSend, placeholder, value, onChange, disabled, hideHereButton }: Props) {
+export function InputBar({ onSend, placeholder, value, onChange, disabled, hideNewPaneButton }: Props) {
   const handleKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       if (disabled) return;
-      // ⌘⇧↵ collapses the current pane; plain ⌘↵ spawns a new pane.
-      onSend(e.shiftKey ? "here" : "new-pane");
+      onSend(e.shiftKey);
     }
   };
   const empty = value.trim().length === 0;
@@ -36,25 +36,25 @@ export function InputBar({ onSend, placeholder, value, onChange, disabled, hideH
         <button
           className="primary"
           disabled={disabled || empty}
-          onClick={() => onSend("new-pane")}
-          title="Open the response in a new column (keeps this one in view)"
+          onClick={() => onSend(false)}
+          title="Send. First follow-up collapses this column; a sibling branch opens in a new column."
         >
-          Send → new pane
+          Send
         </button>
-        {hideHereButton ? null : (
+        {hideNewPaneButton ? null : (
           <button
             disabled={disabled || empty}
-            onClick={() => onSend("here")}
-            title="Collapse this column and open the response here"
+            onClick={() => onSend(true)}
+            title="Force the response into a new column even if it's the first follow-up"
           >
-            ↳ Send here
+            Send → new pane
           </button>
         )}
       </div>
       <div className="hint">
-        {hideHereButton
+        {hideNewPaneButton
           ? "⌘↵ Send"
-          : "⌘↵ New pane · ⌘⇧↵ Send here"}
+          : "⌘↵ Send (auto) · ⌘⇧↵ Send → new pane"}
       </div>
     </div>
   );

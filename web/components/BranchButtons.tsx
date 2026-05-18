@@ -4,8 +4,9 @@ import { useConfirm } from "../state/confirm.ts";
 
 interface Props {
   children: TreeNodePublic[];
-  // Primary main click + the secondary collapse button both route here, with
-  // the mode set accordingly. Default action (clicking the row) is "new-pane".
+  // Opens an existing branch. Default click = "here"; the ↳ icon button and
+  // shift-click both promote to "new-pane". Clicking on an existing branch
+  // never auto-spawns a pane unless the user explicitly asks for it.
   onOpen: (nodeId: string, mode: OpenMode) => void;
   onDelete: (nodeId: string) => void;
 }
@@ -36,19 +37,19 @@ export function BranchButtons({ children, onOpen, onDelete }: Props) {
         <div key={c.nodeId} className="branch-button-row">
           <button
             className="branch-button"
-            title={c.prompt + "\n\nClick: open in new column\nShift-click: open here (collapse current)"}
-            onClick={(e) => onOpen(c.nodeId, e.shiftKey ? "here" : "new-pane")}
+            title={c.prompt + "\n\nClick: open here (collapse this column)\nShift-click: open in new column"}
+            onClick={(e) => onOpen(c.nodeId, e.shiftKey ? "new-pane" : "here")}
           >
             <span className="branch-button-arrow">→</span>
             <span className="branch-button-text">{truncate(c.prompt, 120)}</span>
           </button>
           <button
-            className="branch-here"
-            title="Open here (collapse this column)"
-            onClick={(e) => { e.stopPropagation(); onOpen(c.nodeId, "here"); }}
-            aria-label="Open here"
+            className="branch-newpane"
+            title="Open this branch in a new column"
+            onClick={(e) => { e.stopPropagation(); onOpen(c.nodeId, "new-pane"); }}
+            aria-label="Open in new column"
           >
-            ↳
+            ⇲
           </button>
           <button
             className="branch-delete"

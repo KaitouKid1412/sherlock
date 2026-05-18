@@ -66,10 +66,17 @@ export function PaneView({ paneId }: Props) {
   const ancestors = path.slice(0, -1);  // everything above the current node
   const isStreaming = currentNode.status === "streaming" || currentNode.status === "queued";
 
-  const handleSend = async (mode: OpenMode) => {
+  // Auto-mode: if this would be the parent's FIRST child, drill into it
+  // in the same pane (collapse the parent into a breadcrumb). If the parent
+  // already has children, this new question creates a sibling branch — so
+  // spawn a new pane to keep the existing branches visible.
+  // Override (force new pane) via the InputBar's shift-modifier shortcut.
+  const handleSend = async (forceNewPane: boolean) => {
     const prompt = draft.trim();
     if (!prompt) return;
     setDraft("");
+    const siblingCount = children.length;
+    const mode: OpenMode = forceNewPane || siblingCount > 0 ? "new-pane" : "here";
     await sendInPane(paneId, prompt, mode, currentNode.nodeId);
   };
 

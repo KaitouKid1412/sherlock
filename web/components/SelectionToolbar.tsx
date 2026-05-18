@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { usePanes } from "../state/panes.ts";
+import { usePanes, selectChildren, type OpenMode } from "../state/panes.ts";
 
 interface SelectionInfo {
   text: string;
@@ -49,6 +49,7 @@ export function SelectionToolbar() {
   const [draft, setDraft] = useState("");
   const sendInPane = usePanes((s) => s.sendInPane);
   const panes = usePanes((s) => s.panes);
+  const tree = usePanes((s) => s.tree);
   const composerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -144,11 +145,13 @@ export function SelectionToolbar() {
     setInfo(null);
     setDraft("");
     window.getSelection()?.removeAllRanges();
-    // sendInPane uses the pane's currentNodeId as the parent — exactly
-    // what we want: the new child node hangs off the response the user
-    // was reading. Default to "new-pane" so the explanation opens beside
-    // the source response instead of replacing it.
-    await sendInPane(pane.paneId, finalPrompt, "new-pane", pane.currentNodeId ?? undefined);
+    // Auto-mode parity with the in-pane composer: if the response the user
+    // selected from has no follow-ups yet, drill into the answer in-place;
+    // if it already has siblings, open the explanation as a new sibling
+    // branch in a new column.
+    const siblingCount = selectChildren(tree, pane.currentNodeId).length;
+    const mode: OpenMode = siblingCount > 0 ? "new-pane" : "here";
+    await sendInPane(pane.paneId, finalPrompt, mode, pane.currentNodeId ?? undefined);
   };
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
