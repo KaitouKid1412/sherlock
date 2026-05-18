@@ -85,14 +85,31 @@ echo "server pid=$SERVER_PID"
     exit 0
   fi
   old_lock="$(shasum -a 256 package-lock.json 2>/dev/null | cut -d' ' -f1)"
+  old_bundle_hash="$(find "$APP_DIR/packaging/Sherlock.app" -type f 2>/dev/null | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
   if ! git reset --hard origin/release 2>/dev/null; then
     echo "[$(date)] update: reset failed; skipping"
     exit 0
   fi
   new_lock="$(shasum -a 256 package-lock.json 2>/dev/null | cut -d' ' -f1)"
+  new_bundle_hash="$(find "$APP_DIR/packaging/Sherlock.app" -type f 2>/dev/null | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
   if [ "$old_lock" != "$new_lock" ]; then
     echo "[$(date)] update: package-lock changed, running npm install"
     npm install --silent 2>&1 || echo "[$(date)] update: npm install failed"
+  fi
+  # Refresh /Applications/Sherlock.app when the bundle (icon, Info.plist, MacOS script) changed.
+  if [ "$old_bundle_hash" != "$new_bundle_hash" ] && [ -d "$APP_DIR/packaging/Sherlock.app" ]; then
+    echo "[$(date)] update: .app bundle changed, refreshing /Applications/Sherlock.app"
+    rm -rf "/Applications/Sherlock.app.tmp"
+    if cp -R "$APP_DIR/packaging/Sherlock.app" "/Applications/Sherlock.app.tmp" 2>/dev/null; then
+      rm -rf "/Applications/Sherlock.app"
+      mv "/Applications/Sherlock.app.tmp" "/Applications/Sherlock.app"
+      # Tell LaunchServices to re-read the bundle so the new icon shows up.
+      /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+        -f "/Applications/Sherlock.app" 2>/dev/null || true
+      echo "[$(date)] update: .app bundle refreshed"
+    else
+      echo "[$(date)] update: .app bundle refresh failed (no write access?); leaving previous version"
+    fi
   fi
   echo "[$(date)] update: complete (applies on next launch)"
 ) >>"$APP_DIR/update.log" 2>&1 &
