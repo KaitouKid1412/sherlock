@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Sherlock app entry point. Delegates to the launcher in the user-data dir.
+exec "$HOME/Library/Application Support/Sherlock/scripts/launcher.sh"
