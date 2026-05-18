@@ -25,8 +25,9 @@ fastify.get("/api/health", async () => ({
 }));
 
 // Heartbeat — frontend pings every 10s while any Sherlock tab is open.
-// In production, the server self-shuts-down 30s after the last heartbeat.
-const IDLE_TIMEOUT_MS = 30_000;
+// We track lastHeartbeatAt for diagnostics and to gate the startup-grace
+// orphan-cleanup check below, but we no longer kill the server on
+// heartbeat staleness (see startIdleWatcher comment).
 const STARTUP_GRACE_MS = 5 * 60 * 1000;
 let lastHeartbeatAt = 0;
 const serverStartedAt = Date.now();
@@ -106,35 +107,24 @@ function openBrowser(url: string) {
 }
 
 function startIdleWatcher() {
-  const TICK_MS = 5_000;
-  // If the interval was paused (laptop sleep, debugger pause, system stall)
-  // and fires much later than scheduled, the apparent gap since the last
-  // heartbeat will look huge — but that's clock drift, not real idle. Treat
-  // any tick gap above this threshold as a probable pause and reset the
-  // idle clock to give the frontend its normal grace window to reconnect.
-  const TIME_JUMP_THRESHOLD_MS = 30_000;
-  let lastTickAt = Date.now();
+  // We deliberately do NOT shut down on heartbeat staleness anymore. macOS
+  // Power Nap + closed-lid keeps the Node process ticking while the browser
+  // pauses its tab JS — so the frontend's heartbeats stop while the server
+  // keeps running, then the server self-killed after 30s, and refresh-after-
+  // wake failed. Trading "auto-cleanup after closed tabs" for "always alive"
+  // is the right call: ~80MB idle RAM is cheap; broken refresh-after-sleep
+  // is unusable.
+  //
+  // We KEEP the startup-grace check: if no tab connects within 5 min of
+  // boot, kill the orphan. This still cleans up the install-but-never-open
+  // edge case without touching the sleep path.
   setInterval(() => {
     const now = Date.now();
-    const tickGap = now - lastTickAt;
-    lastTickAt = now;
-
-    if (tickGap > TIME_JUMP_THRESHOLD_MS) {
-      fastify.log.info(`time jump detected (${Math.round(tickGap / 1000)}s); resetting idle timer`);
-      if (lastHeartbeatAt > 0) lastHeartbeatAt = now;
-      return;
-    }
-
-    if (lastHeartbeatAt === 0) {
-      if (now - serverStartedAt > STARTUP_GRACE_MS) {
-        fastify.log.info("no tab connected within startup grace; shutting down");
-        process.exit(0);
-      }
-    } else if (now - lastHeartbeatAt > IDLE_TIMEOUT_MS) {
-      fastify.log.info("no heartbeat for 30s; shutting down");
+    if (lastHeartbeatAt === 0 && now - serverStartedAt > STARTUP_GRACE_MS) {
+      fastify.log.info("no tab connected within startup grace; shutting down");
       process.exit(0);
     }
-  }, TICK_MS).unref();
+  }, 30_000).unref();
 }
 
 try {
