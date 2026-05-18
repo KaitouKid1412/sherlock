@@ -63,6 +63,10 @@ if [ -d "$APP_DIR/.git" ]; then
     git -C "$APP_DIR" reset --hard origin/main
   fi
 else
+  if [ -d "$APP_DIR" ]; then
+    warn "Found non-git directory at $APP_DIR (stale state from a previous attempt). Removing."
+    rm -rf "$APP_DIR"
+  fi
   say "Cloning Sherlock to $APP_DIR"
   mkdir -p "$(dirname "$APP_DIR")"
   git clone --depth=1 "$REPO_URL" "$APP_DIR"

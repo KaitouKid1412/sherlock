@@ -14,7 +14,9 @@ Best for people who do long-form research sessions with Claude — learning a ne
 
 ---
 
-## For users
+## Onboarding (first-time setup)
+
+End-to-end, this takes about 5 minutes. After this you'll have Sherlock in `/Applications` and a research conversation open in your browser.
 
 ### Prerequisites
 
@@ -22,83 +24,115 @@ Best for people who do long-form research sessions with Claude — learning a ne
 |---|---|
 | macOS 11 Big Sur or later | Apple Silicon recommended; Intel supported |
 | Claude **Pro** or **Max** subscription | Used by the underlying CLI for auth |
-| Claude Code CLI installed and signed in | One-time setup; see Step 1 below |
-| Node.js 20+ | The Sherlock installer fetches the official `.pkg` for you if missing |
+| Node.js 20+ | The installer fetches the official `.pkg` for you if missing |
 
 You do **not** need an Anthropic API key, a developer account, Homebrew, or any paid hosting. Sherlock uses your existing claude.ai login through the official CLI.
 
-### Step 1 — install the Claude Code CLI (one-time, ~2 minutes)
+---
 
-The Claude Code CLI is the engine Sherlock wraps. You install it once and forget about it.
+### Step 1 — install and sign in to the Claude Code CLI
+
+The Claude Code CLI is the engine Sherlock wraps around. One-time setup.
 
 1. Open **Terminal** (`Cmd + Space` → "Terminal" → Enter).
-2. Paste and run:
+2. Install the CLI:
 
    ```sh
    curl -fsSL https://claude.ai/install.sh | bash
    ```
 
-3. Sign in:
+3. Sign in (a browser window opens — use the same email as claude.ai):
 
    ```sh
    claude login
    ```
 
-   A browser window opens. Sign in with the same email you use on claude.ai.
-
-4. Verify:
+4. **Verify** before continuing:
 
    ```sh
    claude /status
    ```
 
-   The `Auth` line should say *subscription* — **not** *API key*. If it says API key, remove `ANTHROPIC_API_KEY` from your shell profile (`.zshrc` / `.bash_profile`) and restart Terminal.
+   ✅ The `Auth` line says **subscription** — you're good.
+   ❌ If it says **API key**: remove `ANTHROPIC_API_KEY` from your shell profile (`~/.zshrc` or `~/.bash_profile`), restart Terminal, and run `claude /status` again.
 
-### Step 2 — install Sherlock (one-time, ~1 minute)
+---
 
-Paste this into the same Terminal window:
+### Step 2 — install Sherlock
+
+In the same Terminal window:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/KaitouKid1412/sherlock/main/install.sh | bash
 ```
 
-The installer will:
+What this does, in order:
 
-1. Check that Node.js 20+ is installed (and open the official Node `.pkg` installer GUI for you if it isn't — click through, then re-run the line above).
-2. Clone Sherlock into `~/Library/Application Support/Sherlock`.
-3. Install dependencies and build the frontend.
-4. Place `Sherlock.app` in `/Applications`.
+1. Checks for Node 20+. If missing, opens the official Node `.pkg` installer GUI — click through it, then **re-run the curl line above**.
+2. Clones the Sherlock repo into `~/Library/Application Support/Sherlock`.
+3. Runs `npm install` and builds the frontend.
+4. Copies `Sherlock.app` into `/Applications`.
 
-You can close Terminal when it's done.
+**Verify** before continuing:
 
-### Step 3 — launch Sherlock
+```sh
+ls /Applications/Sherlock.app
+```
 
-Open Sherlock the same way you open any Mac app:
+You should see the directory listing (it's a real `.app`, which on macOS is a folder). You can close Terminal — you won't need it again.
+
+---
+
+### Step 3 — launch Sherlock for the first time
+
+Open it like any Mac app:
 
 - Double-click **Sherlock** in `/Applications`, **or**
-- `Cmd + Space` → type "sherlock" → Enter, **or**
-- Drag it onto your Dock once and click from there.
+- `Cmd + Space` → type "sherlock" → Enter (Spotlight)
 
-A browser tab opens at `http://127.0.0.1:7777` with Sherlock ready to use.
+Within ~2 seconds, your default browser opens a new tab at `http://127.0.0.1:7777`. You should see a panel titled **"Start a conversation"** with the prompt *"What would you like to research?"*.
 
-### Updates — completely automatic
+If nothing opens after 5 seconds, check `~/Library/Application Support/Sherlock/launcher.log` and `server.log` — see [Troubleshooting](#troubleshooting) below.
 
-You never click "update". Every time you launch Sherlock, it quietly fetches the latest code from the `release` branch in the background. The new version applies on your **next** launch. No banners, no restarts, no `.dmg` downloads.
+---
 
-### Quitting Sherlock
+### Step 4 — send your first prompt
 
-Sherlock's server runs in the background while any browser tab is open. To fully stop it, close all Sherlock tabs — the server self-shuts-down ~30 seconds later. Re-launching from the app icon starts it again instantly.
+Type any question into the input bar at the bottom and press **Cmd + Enter** (or click the send button).
+
+A pane appears and Claude starts streaming an answer. To split the answer across columns, click "Continue in new column" on any reply — the right side of the screen splits, and you can keep the original answer visible while you ask follow-ups in the new pane.
+
+That's the whole research loop. The History sidebar on the left lists past Sherlock conversations.
+
+---
+
+### Step 5 — pin it for daily use (optional)
+
+If you'll use Sherlock regularly, drag `Sherlock.app` from `/Applications` onto your Dock so it's one click away. Spotlight already finds it by name, so this is purely for muscle memory.
+
+---
+
+## How Sherlock behaves
+
+**Updates are silent.** On every launch, Sherlock fetches the latest code from the `release` branch in the background. The new version applies on your **next** launch — no prompts, no "Restart to apply" banners. You never click "update".
+
+**The server runs in the background.** While any Sherlock browser tab is open, a local Node server is alive. To fully stop it, close **all** Sherlock tabs — the server self-shuts-down ~30 seconds later. Re-launching from the app icon spins it back up instantly.
+
+**Everything is local.** Sherlock's data, your conversation history, and the Claude session files all live on your Mac under `~/.claude/projects/...` (managed by the Claude CLI) and `~/Library/Application Support/Sherlock/` (Sherlock itself). Nothing is uploaded anywhere except the prompts you send to Claude.
+
+---
 
 ### Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| First launch shows nothing | Check `~/Library/Application Support/Sherlock/launcher.log` and `server.log` |
-| `claude not found` errors in panes | Quit (close all tabs, wait 30s), then re-launch — Sherlock re-reads `PATH` on startup |
-| `Auth: API key` warning | Remove `ANTHROPIC_API_KEY` from your shell profile, restart Terminal, restart Sherlock |
-| Blank panes / no response | Run `claude /status` in Terminal — your subscription may be rate-limited or expired |
-| Force-reinstall | Re-run the `curl … install.sh` line; it's idempotent |
-| Logs | `~/Library/Application Support/Sherlock/{launcher,server,update}.log` |
+| Double-clicking Sherlock does nothing | Check `~/Library/Application Support/Sherlock/launcher.log`. Most common cause: Node isn't on the GUI app's `PATH` — re-run `install.sh`. |
+| Browser opens but page shows "Can't connect" | The server is still booting — wait 2 seconds and refresh. If it persists, check `server.log`. |
+| `claude not found` errors in panes | Quit (close all tabs, wait 30s), then re-launch — Sherlock re-reads `PATH` on startup. |
+| `Auth: API key` warning | Remove `ANTHROPIC_API_KEY` from your shell profile, restart Terminal, restart Sherlock. |
+| Blank panes / no streaming response | Run `claude /status` in Terminal — your subscription may be rate-limited or expired. |
+| Force-reinstall everything | Re-run the `curl … install.sh` line; it's idempotent and replaces the existing checkout. |
+| Where to find logs | `~/Library/Application Support/Sherlock/{launcher,server,update}.log` |
 
 ---
 
