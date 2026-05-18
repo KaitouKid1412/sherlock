@@ -23,13 +23,17 @@ interface QueuedOp {
 
 // Server state. One conversation (one tree) loaded at a time; multiple panes
 // can be open against it, each pinned to its own currentNodeId.
+// SSE is conversation-scoped: a single subscriber set + event log, NOT keyed
+// per pane. Earlier per-pane SSE caused each broadcast to deliver the same
+// event N times (once per open pane), and the frontend's applyEvent applied
+// each delta N times — the source of the visible "text repeating itself"
+// bug. With one channel per conversation, applyEvent runs exactly once.
 const state = {
   rootSessionId: null as string | null,
   tree: null as ConversationTreePublic | null,
   panes: [] as PaneState[],
   turns: new Map<string, TurnState>(),  // runtime streaming buffers, keyed by nodeId
-  eventLog: new Map<string, ServerSentEvent[]>(),
-  subscribers: new Map<string, Set<SseChannel>>(),
+  subscribers: new Set<SseChannel>(),
   running: new Map<string, RunningClaude>(),  // keyed by nodeId
   queue: [] as QueuedOp[],
 };
@@ -41,11 +45,8 @@ function debugLog(label: string, payload: unknown): void {
 function resetState(): void {
   for (const running of state.running.values()) running.kill();
   state.running.clear();
-  for (const subs of state.subscribers.values()) {
-    for (const s of subs) s.close();
-  }
+  for (const s of state.subscribers) s.close();
   state.subscribers.clear();
-  state.eventLog.clear();
   state.turns.clear();
   state.panes = [];
   state.queue = [];
@@ -54,15 +55,9 @@ function resetState(): void {
 }
 
 function broadcast(ev: ServerSentEvent): void {
-  // Conversation-scoped broadcast: every pane in the current conversation
-  // sees every event, so a node spawned in pane A shows up live in pane B.
-  // Event log is also keyed per-pane (for replay on SSE reconnect).
-  for (const pane of state.panes) {
-    if (!state.eventLog.has(pane.paneId)) state.eventLog.set(pane.paneId, []);
-    state.eventLog.get(pane.paneId)!.push(ev);
-    const subs = state.subscribers.get(pane.paneId);
-    if (subs) for (const s of subs) s.send(ev);
-  }
+  // Single conversation-wide channel. Each open SSE subscriber receives
+  // every event exactly once.
+  for (const s of state.subscribers) s.send(ev);
 }
 
 function createPane(currentNodeId: string | null, afterPaneId?: string): PaneState {
@@ -82,7 +77,6 @@ function createPane(currentNodeId: string | null, afterPaneId?: string): PaneSta
   } else {
     state.panes.push(pane);
   }
-  state.eventLog.set(pane.paneId, []);
   return pane;
 }
 
@@ -314,27 +308,23 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
     },
   );
 
-  fastify.get<{ Params: { id: string } }>("/api/panes/:id/stream", (req, reply) => {
-    const pane = state.panes.find((p) => p.paneId === req.params.id);
-    if (!pane) {
-      reply.code(404);
-      return reply.send({ error: "pane not found" });
-    }
+  // ONE SSE channel per conversation. Multiple panes share it via a single
+  // listener on the frontend (App-level useEffect), and applyEvent fires
+  // exactly once per event regardless of how many panes are open.
+  // Replays the current tree on connect so a freshly-opened tab catches up
+  // to ongoing streams (text deltas are only relative to whatever the tree
+  // already has when the connection opens — node.text on disk/in-memory is
+  // authoritative for nodes that finished before the subscriber connected).
+  fastify.get("/api/stream", (req, reply) => {
     const channel = startSse(req, reply);
-    if (!state.subscribers.has(pane.paneId)) state.subscribers.set(pane.paneId, new Set());
-    state.subscribers.get(pane.paneId)!.add(channel);
-
-    // Replay: send the tree's current state, then any buffered conversation events.
+    state.subscribers.add(channel);
     if (state.tree) {
       for (const node of Object.values(state.tree.nodes)) {
         channel.send({ type: "node_added", node });
       }
     }
-    const log = state.eventLog.get(pane.paneId) ?? [];
-    for (const ev of log) channel.send(ev);
-
     req.raw.on("close", () => {
-      state.subscribers.get(pane.paneId)?.delete(channel);
+      state.subscribers.delete(channel);
     });
   });
 
@@ -391,9 +381,6 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
   fastify.delete<{ Params: { id: string } }>("/api/panes/:id", async (req, reply) => {
     const idx = state.panes.findIndex((p) => p.paneId === req.params.id);
     if (idx === -1) { reply.code(404); return { error: "pane not found" }; }
-    state.subscribers.get(req.params.id)?.forEach((s) => s.close());
-    state.subscribers.delete(req.params.id);
-    state.eventLog.delete(req.params.id);
     state.panes.splice(idx, 1);
     // Closing a pane never affects the tree or any running turn (turns are
     // bound to node IDs, not pane IDs).
@@ -429,11 +416,6 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
       const panesToClose = state.panes.filter(
         (p) => p.currentNodeId !== null && removedIds.has(p.currentNodeId),
       );
-      for (const pane of panesToClose) {
-        state.subscribers.get(pane.paneId)?.forEach((s) => s.close());
-        state.subscribers.delete(pane.paneId);
-        state.eventLog.delete(pane.paneId);
-      }
       const closedIds = new Set(panesToClose.map((p) => p.paneId));
       state.panes = state.panes.filter((p) => !closedIds.has(p.paneId));
       // Delete the underlying Claude Code .jsonl for any session that's now

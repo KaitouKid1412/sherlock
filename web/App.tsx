@@ -6,6 +6,7 @@ import { SelectionToolbar } from "./components/SelectionToolbar.tsx";
 import { ErrorToast } from "./components/ErrorToast.tsx";
 import { HistorySidebar } from "./components/HistorySidebar.tsx";
 import { ConfirmModal } from "./components/ConfirmModal.tsx";
+import { openConversationStream } from "./lib/sse-client.ts";
 
 const SEED_COLUMN_WIDTH = 620;
 const STACKED_COLUMN_WIDTH = 480;
@@ -34,6 +35,7 @@ export function App() {
   const panes = usePanes((s) => s.panes);
   const tree = usePanes((s) => s.tree);
   const hydrate = usePanes((s) => s.hydrate);
+  const applyEvent = usePanes((s) => s.applyEvent);
   const startConversation = usePanes((s) => s.startConversation);
   const [draft, setDraft] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
@@ -41,6 +43,14 @@ export function App() {
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+
+  // Single conversation-wide SSE channel. Every pane reads from the shared
+  // Zustand state that this listener feeds, so each event is applied exactly
+  // once regardless of how many panes are open.
+  useEffect(() => {
+    const close = openConversationStream((ev) => applyEvent("", ev));
+    return () => close();
+  }, [applyEvent]);
 
   useEffect(() => {
     const beat = () => {

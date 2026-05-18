@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   usePanes, selectPath, selectChildren, type UiToolCall, type OpenMode,
 } from "../state/panes.ts";
-import { openPaneStream } from "../lib/sse-client.ts";
 import { MarkdownMessage } from "./MarkdownMessage.tsx";
 import { InputBar } from "./InputBar.tsx";
 import { ToolUseCard } from "./ToolUseCard.tsx";
@@ -19,7 +18,6 @@ export function PaneView({ paneId }: Props) {
   const pane = usePanes((s) => s.panes.find((p) => p.paneId === paneId));
   const tree = usePanes((s) => s.tree);
   const nodeToolCalls = usePanes((s) => s.nodeToolCalls);
-  const applyEvent = usePanes((s) => s.applyEvent);
   const sendInPane = usePanes((s) => s.sendInPane);
   const openBranch = usePanes((s) => s.openBranch);
   const navigatePane = usePanes((s) => s.navigatePane);
@@ -30,10 +28,9 @@ export function PaneView({ paneId }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    const close = openPaneStream(paneId, (ev) => applyEvent(paneId, ev));
-    return () => close();
-  }, [paneId, applyEvent]);
+  // No per-pane SSE here — App-level opens a single conversation stream
+  // shared by every pane (see App.tsx). The previous per-pane subscription
+  // caused each delta to be applied once per open pane → duplicated text.
 
   // Autoscroll: stay glued to the bottom while a turn streams or a new node opens.
   const path = pane ? selectPath(tree, pane.currentNodeId) : [];
