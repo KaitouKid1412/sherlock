@@ -56,6 +56,9 @@ command -v git >/dev/null 2>&1 || die "git is required but not found. Run: xcode
 # 4. Clone or update the repo
 if [ -d "$APP_DIR/.git" ]; then
   say "Updating existing Sherlock checkout at $APP_DIR"
+  # Broaden the refspec on existing installs that were cloned with --depth=1
+  # before we set this in step 4's clone path — guarantees origin/release exists.
+  git -C "$APP_DIR" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
   git -C "$APP_DIR" fetch origin
   if git -C "$APP_DIR" show-ref --quiet refs/remotes/origin/release; then
     git -C "$APP_DIR" reset --hard origin/release
@@ -70,6 +73,9 @@ else
   say "Cloning Sherlock to $APP_DIR"
   mkdir -p "$(dirname "$APP_DIR")"
   git clone --depth=1 "$REPO_URL" "$APP_DIR"
+  # Configure broad refspec so subsequent `git fetch origin release` creates
+  # the origin/release ref (default --depth=1 refspec only tracks main).
+  git -C "$APP_DIR" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
 fi
 
 # 5. Install dependencies + build the frontend

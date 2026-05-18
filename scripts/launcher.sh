@@ -60,100 +60,11 @@ check_existing() {
   return 1
 }
 
-# Fire a background self-update. Used by both the fast-path (warm click on
-# an already-running server) and the cold-start path. Uses an update-lock
-# so multiple clicks in quick succession don't run concurrent npm installs.
+# Fire a background self-update. Delegates to scripts/update.sh which is
+# the single source of truth for update logic — also invoked by the server
+# every 30 min for in-session polling.
 run_background_update() {
-  local update_lock="$APP_DIR/.updating"
-  if [ -d "$update_lock" ]; then
-    local age
-    age=$(( $(date +%s) - $(stat -f %m "$update_lock" 2>/dev/null || echo 0) ))
-    if [ "$age" -lt 600 ]; then
-      echo "another update already running (age=${age}s); skipping"
-      return 0
-    fi
-    rmdir "$update_lock" 2>/dev/null || true
-  fi
-  if ! mkdir "$update_lock" 2>/dev/null; then
-    return 0
-  fi
-  (
-    trap 'rmdir "$update_lock" 2>/dev/null || true' EXIT
-    echo "[$(date)] update: starting"
-    old_head="$(git rev-parse HEAD 2>/dev/null || echo none)"
-    # Stale .git/index.lock can be left behind if a previous git operation
-    # was killed (interrupted launcher, system sleep mid-fetch). Clean it up
-    # if it's older than 60 seconds so we don't get stuck forever.
-    if [ -f "$APP_DIR/.git/index.lock" ]; then
-      lock_age=$(( $(date +%s) - $(stat -f %m "$APP_DIR/.git/index.lock" 2>/dev/null || echo 0) ))
-      if [ "$lock_age" -gt 60 ]; then
-        echo "[$(date)] update: removing stale .git/index.lock (age=${lock_age}s)"
-        rm -f "$APP_DIR/.git/index.lock"
-      fi
-    fi
-    if ! fetch_err="$(git fetch origin release 2>&1)"; then
-      echo "[$(date)] update: fetch failed; skipping"
-      echo "[$(date)] update:   $fetch_err"
-      exit 0
-    fi
-    old_lock="$(shasum -a 256 package-lock.json 2>/dev/null | cut -d' ' -f1)"
-    old_bundle_hash="$(find "$APP_DIR/packaging/Sherlock.app" -type f 2>/dev/null | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
-    if ! reset_err="$(git reset --hard origin/release 2>&1)"; then
-      echo "[$(date)] update: reset failed; skipping"
-      echo "[$(date)] update:   $reset_err"
-      # Try to recover from common failure modes
-      if echo "$reset_err" | grep -qi "index.lock"; then
-        echo "[$(date)] update: detected lock file in error; removing and retrying"
-        rm -f "$APP_DIR/.git/index.lock"
-        if ! reset_err2="$(git reset --hard origin/release 2>&1)"; then
-          echo "[$(date)] update: retry also failed: $reset_err2"
-          exit 0
-        fi
-      elif echo "$reset_err" | grep -qi "local changes"; then
-        echo "[$(date)] update: detected dirty working tree; stashing and retrying"
-        git stash push -u -m "auto-stash-pre-update-$(date +%s)" 2>&1 || true
-        if ! reset_err2="$(git reset --hard origin/release 2>&1)"; then
-          echo "[$(date)] update: retry also failed: $reset_err2"
-          exit 0
-        fi
-      else
-        exit 0
-      fi
-    fi
-    new_head="$(git rev-parse HEAD 2>/dev/null || echo none)"
-    if [ "$old_head" = "$new_head" ]; then
-      echo "[$(date)] update: already up to date ($new_head)"
-      exit 0
-    fi
-    echo "[$(date)] update: $old_head -> $new_head"
-    printf '{"state":"updating","at":%s}\n' "$(date +%s)" > "$APP_DIR/.update-status"
-    new_lock="$(shasum -a 256 package-lock.json 2>/dev/null | cut -d' ' -f1)"
-    new_bundle_hash="$(find "$APP_DIR/packaging/Sherlock.app" -type f 2>/dev/null | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
-    if [ "$old_lock" != "$new_lock" ]; then
-      echo "[$(date)] update: package-lock changed, running npm install"
-      npm install --silent 2>&1 || echo "[$(date)] update: npm install failed"
-    fi
-    # Rebuild the frontend. `dist/` is gitignored so git reset doesn't touch it.
-    # Importantly: Fastify serves `dist/` from disk on each request, so a browser
-    # refresh will pick up the new frontend without needing a server restart.
-    echo "[$(date)] update: rebuilding frontend"
-    npm run build --silent 2>&1 || echo "[$(date)] update: build failed"
-    if [ "$old_bundle_hash" != "$new_bundle_hash" ] && [ -d "$APP_DIR/packaging/Sherlock.app" ]; then
-      echo "[$(date)] update: .app bundle changed, refreshing /Applications/Sherlock.app"
-      rm -rf "/Applications/Sherlock.app.tmp"
-      if cp -R "$APP_DIR/packaging/Sherlock.app" "/Applications/Sherlock.app.tmp" 2>/dev/null; then
-        rm -rf "/Applications/Sherlock.app"
-        mv "/Applications/Sherlock.app.tmp" "/Applications/Sherlock.app"
-        /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
-          -f "/Applications/Sherlock.app" 2>/dev/null || true
-        echo "[$(date)] update: .app bundle refreshed"
-      else
-        echo "[$(date)] update: .app bundle refresh failed (no write access?); leaving previous version"
-      fi
-    fi
-    printf '{"state":"updated","at":%s,"head":"%s"}\n' "$(date +%s)" "$new_head" > "$APP_DIR/.update-status"
-    echo "[$(date)] update: complete (frontend live on next browser refresh; server-side code on next cold start)"
-  ) >>"$APP_DIR/update.log" 2>&1 &
+  ( bash "$APP_DIR/scripts/update.sh" ) >/dev/null 2>&1 &
   disown
 }
 

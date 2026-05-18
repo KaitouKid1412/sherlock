@@ -190,6 +190,43 @@ function openBrowser(url: string) {
   });
 }
 
+// In-session update polling. The launcher fires an update on every app click,
+// but most usage patterns don't click the icon often. So the running server
+// itself periodically asks GitHub for the current release SHA; if it's ahead
+// of the local checkout, we run the same update script the launcher uses.
+// Combined with the existing /api/version polling on the frontend, an update
+// pushed at 10:00am should surface a "Restart Sherlock" / "Refresh" banner
+// in any open Sherlock tab within ~30 minutes — no clicks required.
+const UPDATE_POLL_INTERVAL_MS = 30 * 60 * 1000;
+
+async function pollForRemoteUpdate() {
+  try {
+    const { stdout: remote } = await execFileAsync("git", ["ls-remote", "origin", "release"], {
+      cwd: process.cwd(),
+      timeout: 30_000,
+    });
+    const remoteSha = (remote.split("\t")[0] ?? "").trim();
+    if (!remoteSha) return;
+    const { stdout: local } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: process.cwd() });
+    const localSha = local.trim();
+    if (remoteSha === localSha) return;
+    fastify.log.info(`in-session update: ${localSha.slice(0, 7)} -> ${remoteSha.slice(0, 7)}; spawning update.sh`);
+    // Fire-and-forget. update.sh manages its own lock and logs to update.log.
+    const updateScript = resolve(process.cwd(), "scripts/update.sh");
+    spawn("bash", [updateScript], { detached: true, stdio: "ignore" }).unref();
+  } catch (err) {
+    fastify.log.warn({ err }, "in-session update poll failed (offline?)");
+  }
+}
+
+function startUpdatePolling() {
+  // Wait 60s after boot so we don't pile on startup work, then every 30 min.
+  setTimeout(() => {
+    void pollForRemoteUpdate();
+    setInterval(() => void pollForRemoteUpdate(), UPDATE_POLL_INTERVAL_MS).unref();
+  }, 60_000);
+}
+
 function startIdleWatcher() {
   // We deliberately do NOT shut down on heartbeat staleness anymore. macOS
   // Power Nap + closed-lid keeps the Node process ticking while the browser
@@ -219,6 +256,7 @@ try {
     await writePortFile(port);
     openBrowser(url);
     startIdleWatcher();
+    startUpdatePolling();
   }
 } catch (err) {
   fastify.log.error(err);
