@@ -20,8 +20,17 @@ fi
 
 cd "$APP_DIR"
 
-# Ensure node/npm are on PATH (GUI-launched apps don't inherit shell PATH).
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+# GUI-launched apps inherit a minimal PATH that almost never includes node/npm
+# (nvm and fnm both install under $HOME, brew is /opt/homebrew or /usr/local).
+# install.sh captured the user's interactive shell PATH into .runtime-env;
+# source it. The hard-coded fallback covers the case where someone runs the
+# launcher before install.sh has finished, or .runtime-env was deleted.
+if [ -f "$APP_DIR/.runtime-env" ]; then
+  # shellcheck source=/dev/null
+  source "$APP_DIR/.runtime-env"
+else
+  export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+fi
 
 check_existing() {
   if [ -f "$PORT_FILE" ]; then
