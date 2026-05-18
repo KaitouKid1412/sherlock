@@ -168,12 +168,15 @@ if [ ! -f "$APP_DIR/dist/index.html" ] \
 fi
 
 # Start the server detached — it opens its own browser on boot.
+# Pass SHERLOCK_BOOT_SHA so the server knows what commit it's running, which
+# /api/version compares against the on-disk HEAD to detect pending updates.
 echo "starting server"
 rm -f "$PORT_FILE"
-nohup npm start >"$APP_DIR/server.log" 2>&1 &
+BOOT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+SHERLOCK_BOOT_SHA="$BOOT_SHA" nohup npm start >"$APP_DIR/server.log" 2>&1 &
 SERVER_PID=$!
 disown
-echo "server pid=$SERVER_PID"
+echo "server pid=$SERVER_PID (boot sha=$BOOT_SHA)"
 
 # Background self-update — also runs on warm clicks via the fast-path above.
 run_background_update

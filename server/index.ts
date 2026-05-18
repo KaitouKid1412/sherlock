@@ -4,8 +4,11 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { exec } from "node:child_process";
+import { exec, spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { registerPaneRoutes } from "./panes.ts";
+
+const execFileAsync = promisify(execFile);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const IS_PROD = process.env.NODE_ENV === "production";
@@ -35,6 +38,76 @@ const serverStartedAt = Date.now();
 fastify.post("/api/heartbeat", async () => {
   lastHeartbeatAt = Date.now();
   return { ok: true };
+});
+
+// Version: lets the frontend detect when the running process is behind the
+// on-disk checkout, and decide whether the user needs a "Refresh" (FE-only
+// change) or a full "Restart Sherlock" (anything touching server/types/
+// package.json — those files are loaded into Node memory at boot, so only
+// a fresh process picks them up).
+const BOOTED_SHA = (() => {
+  const fromEnv = process.env.SHERLOCK_BOOT_SHA;
+  if (fromEnv) return fromEnv.trim();
+  try {
+    const cwd = process.cwd();
+    const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+  } catch {
+    return "unknown";
+  }
+})();
+
+// Files that, if changed, require a Node restart (memory-loaded modules).
+// Anything else (web/, dist/, scripts/, packaging/, README.md) is safe to
+// pick up with a browser refresh.
+const RESTART_REQUIRING_PREFIXES = ["server/", "types/", "package.json", "package-lock.json", "tsconfig.json"];
+
+function requiresRestart(changedFiles: string[]): boolean {
+  return changedFiles.some((f) => RESTART_REQUIRING_PREFIXES.some((p) => f === p || f.startsWith(p)));
+}
+
+fastify.get("/api/version", async () => {
+  if (BOOTED_SHA === "unknown") {
+    return { booted: "unknown", head: "unknown", restartRequired: false };
+  }
+  let head = BOOTED_SHA;
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: process.cwd() });
+    head = stdout.trim();
+  } catch {
+    return { booted: BOOTED_SHA, head: BOOTED_SHA, restartRequired: false };
+  }
+  if (head === BOOTED_SHA) {
+    return { booted: BOOTED_SHA, head, restartRequired: false };
+  }
+  // SHAs differ — inspect the diff to decide refresh vs restart.
+  let changed: string[] = [];
+  try {
+    const { stdout } = await execFileAsync("git", ["diff", "--name-only", BOOTED_SHA, head], { cwd: process.cwd() });
+    changed = stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+  } catch {
+    // If we can't compute the diff, be conservative and require restart.
+    return { booted: BOOTED_SHA, head, restartRequired: true };
+  }
+  return { booted: BOOTED_SHA, head, restartRequired: requiresRestart(changed) };
+});
+
+// Restart: detach a relauncher, then exit. The frontend handles polling for
+// the new server to come up and reloads itself.
+fastify.post("/api/restart", async (_req, reply) => {
+  reply.send({ ok: true });
+  // Give Fastify a moment to flush the response, then spawn the detached
+  // relauncher and exit. The relauncher waits 500ms (for our process to
+  // fully die) and then invokes `open /Applications/Sherlock.app`, which
+  // calls launcher.sh, which cold-starts a new server.
+  setTimeout(() => {
+    spawn("/bin/sh", ["-c", "sleep 0.5; open /Applications/Sherlock.app"], {
+      detached: true,
+      stdio: "ignore",
+    }).unref();
+    fastify.log.info("restart requested; exiting");
+    process.exit(0);
+  }, 200);
 });
 
 // Update status: launcher.sh + install.sh write this file as updates happen.

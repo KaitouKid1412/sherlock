@@ -26,6 +26,14 @@ interface UpdateStatus {
   head?: string;
 }
 
+interface VersionStatus {
+  booted: string;
+  head: string;
+  restartRequired: boolean;
+}
+
+type ApplyMode = "idle" | "refresh" | "restart" | "restarting";
+
 function formatTime(unixSec: number): string {
   return new Date(unixSec * 1000).toLocaleTimeString(undefined, {
     hour: "2-digit",
@@ -39,6 +47,8 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
+  const [versionStatus, setVersionStatus] = useState<VersionStatus | null>(null);
+  const [applyMode, setApplyMode] = useState<ApplyMode>("idle");
   const [now, setNow] = useState<number>(Date.now());
   const currentSessionId = usePanes((s) => s.sessionId);
   const panes = usePanes((s) => s.panes);
@@ -81,6 +91,65 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
     return () => window.clearInterval(id);
   }, [updateStatus.at]);
 
+  // Poll version so we can show a Refresh / Restart banner when the running
+  // server is behind the on-disk checkout.
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch("/api/version");
+        if (!res.ok) return;
+        const data = (await res.json()) as VersionStatus;
+        if (!cancelled) setVersionStatus(data);
+      } catch {
+        /* ignore */
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  // What the banner button does: refresh for FE-only, full restart otherwise.
+  const updatePending = !!versionStatus && versionStatus.booted !== versionStatus.head && versionStatus.booted !== "unknown";
+  const buttonMode: ApplyMode = updatePending
+    ? versionStatus!.restartRequired ? "restart" : "refresh"
+    : "idle";
+
+  const handleApply = async () => {
+    if (buttonMode === "refresh") {
+      setApplyMode("refresh");
+      window.location.reload();
+      return;
+    }
+    if (buttonMode !== "restart") return;
+    setApplyMode("restarting");
+    try {
+      await fetch("/api/restart", { method: "POST" });
+    } catch {
+      /* expected — server exits mid-response */
+    }
+    // Poll health until the new server is up, then reload.
+    const start = Date.now();
+    while (Date.now() - start < 30_000) {
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        const res = await fetch("/api/health", { cache: "no-store" });
+        if (res.ok) {
+          window.location.reload();
+          return;
+        }
+      } catch {
+        /* still down, keep polling */
+      }
+    }
+    // Gave up after 30s — show some recovery hint by clearing the overlay.
+    setApplyMode("idle");
+  };
+
   const handleLoad = async (sessionId: string) => {
     if (sessionId === currentSessionId) return;
     setLoadingId(sessionId);
@@ -101,31 +170,46 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
     });
   };
 
+  const restartOverlay = applyMode === "restarting" ? (
+    <div className="sherlock-restart-overlay">
+      <div className="sherlock-restart-card">
+        <div className="sherlock-restart-spinner" />
+        <div className="sherlock-restart-title">Restarting Sherlock…</div>
+        <div className="sherlock-restart-sub">Reloading once the new server is up.</div>
+      </div>
+    </div>
+  ) : null;
+
   if (collapsed) {
     return (
-      <div className="history-sidebar collapsed">
-        <button
-          className="sidebar-icon-btn"
-          onClick={onToggle}
-          title="Show history"
-          aria-label="Show history"
-        >
-          ›
-        </button>
-        <button
-          className="sidebar-icon-btn"
-          onClick={handleNew}
-          disabled={newConversationDisabled}
-          title="New conversation"
-          aria-label="New conversation"
-        >
-          +
-        </button>
-      </div>
+      <>
+        <div className="history-sidebar collapsed">
+          <button
+            className="sidebar-icon-btn"
+            onClick={onToggle}
+            title="Show history"
+            aria-label="Show history"
+          >
+            ›
+          </button>
+          <button
+            className="sidebar-icon-btn"
+            onClick={handleNew}
+            disabled={newConversationDisabled}
+            title="New conversation"
+            aria-label="New conversation"
+          >
+            +
+          </button>
+        </div>
+        {restartOverlay}
+      </>
     );
   }
 
   return (
+    <>
+    {restartOverlay}
     <div className="history-sidebar">
       <div className="sidebar-brand">
         <div className="sidebar-brand-row">
@@ -163,6 +247,25 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
           <span className="sidebar-brand-session" title={currentSessionId}>
             session {currentSessionId.slice(0, 8)}
           </span>
+        ) : null}
+        {updatePending ? (
+          <div className="sidebar-apply-banner">
+            <span className="sidebar-apply-banner-msg">
+              {buttonMode === "refresh" ? "New version ready" : "New server version ready"}
+            </span>
+            <button
+              className="sidebar-apply-btn"
+              onClick={handleApply}
+              disabled={applyMode === "restarting"}
+              title={
+                buttonMode === "refresh"
+                  ? "Frontend-only change — reload the page"
+                  : "Server-side change — restart Sherlock"
+              }
+            >
+              {buttonMode === "refresh" ? "Refresh" : "Restart Sherlock"}
+            </button>
+          </div>
         ) : null}
         <button
           className="sidebar-new-btn"
@@ -206,5 +309,6 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
         </ul>
       )}
     </div>
+    </>
   );
 }
