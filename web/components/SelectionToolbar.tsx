@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePanes } from "../state/panes.ts";
 
 interface SelectionInfo {
@@ -30,28 +30,45 @@ function readCurrentSelection(): SelectionInfo | null {
   return {
     text,
     paneId,
-    top: rect.top - 44,
+    top: rect.bottom + 8,
     left: rect.left + rect.width / 2,
   };
 }
 
-function buildPrompt(quote: string): string {
+function buildPrompt(quote: string, userQuestion: string): string {
   const truncated = quote.length > 1500 ? quote.slice(0, 1500) + "…" : quote;
   const quoted = truncated.split("\n").map((l) => "> " + l).join("\n");
-  return `Please explain the following passage from your earlier response in much more depth. Unpack the underlying mechanism, edge cases, and any prerequisites I would need to understand it. Here is the passage I selected:\n\n${quoted}`;
+  return `Regarding this passage from your earlier response:\n\n${quoted}\n\n${userQuestion}`;
 }
 
-export function SelectionToolbar() {
-  const [info, setInfo] = useState<SelectionInfo | null>(null);
-  const continueInNewColumn = usePanes((s) => s.continueInNewColumn);
+type Mode = "idle" | "toolbar" | "composer";
 
+export function SelectionToolbar() {
+  const [mode, setMode] = useState<Mode>("idle");
+  const [info, setInfo] = useState<SelectionInfo | null>(null);
+  const [draft, setDraft] = useState("");
+  const sendInPane = usePanes((s) => s.sendInPane);
+  const panes = usePanes((s) => s.panes);
+  const composerRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // While the selection lives, show the toolbar pip. Once user clicks "Ask
+  // about this…" we switch to the composer mode and stop tracking selection
+  // changes (so the user can deselect to type without the toolbar disappearing).
   useEffect(() => {
+    if (mode === "composer") return;
     let pending = 0;
     const onSelectionChange = () => {
-      // Debounce: only act after the selection settles (avoid flicker while dragging).
       window.clearTimeout(pending);
       pending = window.setTimeout(() => {
-        setInfo(readCurrentSelection());
+        const next = readCurrentSelection();
+        if (next) {
+          setInfo(next);
+          setMode("toolbar");
+        } else {
+          setInfo(null);
+          setMode("idle");
+        }
       }, 80);
     };
     document.addEventListener("selectionchange", onSelectionChange);
@@ -59,30 +76,112 @@ export function SelectionToolbar() {
       window.clearTimeout(pending);
       document.removeEventListener("selectionchange", onSelectionChange);
     };
-  }, []);
+  }, [mode]);
 
-  if (!info) return null;
+  // Esc to cancel the composer; click outside also cancels.
+  useEffect(() => {
+    if (mode !== "composer") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setMode("idle");
+        setInfo(null);
+        setDraft("");
+      }
+    };
+    const onClick = (e: MouseEvent) => {
+      if (composerRef.current && !composerRef.current.contains(e.target as Node)) {
+        setMode("idle");
+        setInfo(null);
+        setDraft("");
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onClick);
+    setTimeout(() => textareaRef.current?.focus(), 30);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onClick);
+    };
+  }, [mode]);
 
-  // Clamp horizontal position so the button doesn't overflow viewport.
-  const halfWidth = 130;
+  if (mode === "idle" || !info) return null;
+
+  if (mode === "toolbar") {
+    const halfWidth = 110;
+    const clampedLeft = Math.max(halfWidth + 8, Math.min(window.innerWidth - halfWidth - 8, info.left));
+    const top = Math.max(12, info.top);
+    return (
+      <div
+        className="selection-toolbar"
+        style={{ position: "fixed", top, left: clampedLeft, transform: "translateX(-50%)" }}
+        onMouseDown={(e) => e.preventDefault()}
+      >
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            // Capture selection rect snapshot so the composer doesn't move
+            // when the user later clicks (which deselects).
+            setMode("composer");
+          }}
+        >
+          Ask about this…
+        </button>
+      </div>
+    );
+  }
+
+  // composer mode
+  const halfWidth = 190;
   const clampedLeft = Math.max(halfWidth + 8, Math.min(window.innerWidth - halfWidth - 8, info.left));
   const top = Math.max(12, info.top);
+  const pane = panes.find((p) => p.paneId === info.paneId) ?? panes[0];
 
-  const handleClick = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    const captured = info;
+  const handleSubmit = async () => {
+    const userQ = draft.trim();
+    if (!userQ || !pane) return;
+    const finalPrompt = buildPrompt(info.text, userQ);
+    setMode("idle");
     setInfo(null);
+    setDraft("");
     window.getSelection()?.removeAllRanges();
-    await continueInNewColumn(captured.paneId, buildPrompt(captured.text));
+    // sendInPane uses the pane's currentNodeId as the parent — exactly
+    // what we want: the new child node hangs off the response the user
+    // was reading.
+    await sendInPane(pane.paneId, finalPrompt, pane.currentNodeId ?? undefined);
+  };
+
+  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      handleSubmit();
+    }
   };
 
   return (
     <div
-      className="selection-toolbar"
+      ref={composerRef}
+      className="explain-composer"
       style={{ position: "fixed", top, left: clampedLeft, transform: "translateX(-50%)" }}
-      onMouseDown={(e) => e.preventDefault()}
+      onMouseDown={(e) => e.stopPropagation()}
     >
-      <button onClick={handleClick}>Explain selected in new column</button>
+      <div className="explain-composer-quote" title={info.text}>{info.text}</div>
+      <textarea
+        ref={textareaRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={handleKey}
+        placeholder="What would you like to ask about this passage?"
+      />
+      <div className="explain-composer-row">
+        <button onClick={() => { setMode("idle"); setInfo(null); setDraft(""); }}>Cancel</button>
+        <button
+          className="primary"
+          disabled={draft.trim().length === 0}
+          onClick={handleSubmit}
+        >
+          Ask ⌘↵
+        </button>
+      </div>
     </div>
   );
 }

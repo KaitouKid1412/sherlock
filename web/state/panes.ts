@@ -1,5 +1,7 @@
 import { create } from "zustand";
-import type { ServerSentEvent, StatePublic } from "../../types/events.ts";
+import type {
+  ServerSentEvent, StatePublic, ConversationTreePublic, TreeNodePublic,
+} from "../../types/events.ts";
 
 export interface UiToolCall {
   toolName: string;
@@ -10,36 +12,10 @@ export interface UiToolCall {
 
 export type UiTurnStatus = "queued" | "streaming" | "done" | "error";
 
-export interface UiTurn {
-  turnId: string;
-  prompt: string;
-  text: string;
-  status: UiTurnStatus;
-  toolCalls: UiToolCall[];
-}
-
 export interface UiPane {
   paneId: string;
-  turnIds: string[];
-}
-
-interface PaneStore {
-  sessionId: string | null;
-  panes: UiPane[];
-  turns: Record<string, UiTurn>;
-  hydrating: boolean;
-  error: string | null;
-
-  hydrate: () => Promise<void>;
-  applyEvent: (paneId: string, ev: ServerSentEvent) => void;
-  registerPane: (paneId: string) => void;
-  bootstrapWithPrompt: (prompt: string) => Promise<string | null>;
-  sendInline: (paneId: string, prompt: string) => Promise<void>;
-  continueInNewColumn: (srcPaneId: string, prompt: string) => Promise<string | null>;
-  closePane: (paneId: string) => Promise<void>;
-  setError: (msg: string | null) => void;
-  newConversation: () => Promise<void>;
-  loadHistorySession: (sessionId: string) => Promise<void>;
+  rootSessionId: string | null;
+  currentNodeId: string | null;
 }
 
 export interface HistoryEntry {
@@ -50,21 +26,63 @@ export interface HistoryEntry {
   byteSize: number;
 }
 
+interface PaneStore {
+  rootSessionId: string | null;
+  tree: ConversationTreePublic | null;
+  panes: UiPane[];
+  // Streaming-only state; tool calls are visible during a live turn but
+  // don't survive a server restart. (Tree nodes carry the final response
+  // text — that's persisted.)
+  nodeToolCalls: Record<string, UiToolCall[]>;
+  hydrating: boolean;
+  error: string | null;
+
+  hydrate: () => Promise<void>;
+  applyEvent: (paneId: string, ev: ServerSentEvent) => void;
+  registerPane: (paneId: string, currentNodeId: string | null) => void;
+  startConversation: (prompt: string) => Promise<string | null>;
+  sendInPane: (paneId: string, prompt: string, parentNodeId?: string) => Promise<void>;
+  navigatePane: (paneId: string, nodeId: string) => Promise<void>;
+  closePane: (paneId: string) => Promise<void>;
+  deleteNode: (nodeId: string) => Promise<void>;
+  setError: (msg: string | null) => void;
+  newConversation: () => Promise<void>;
+  loadHistorySession: (sessionId: string) => Promise<void>;
+}
+
+// Selectors are stand-alone helpers (zustand-friendly): callers pass tree
+// references and pin renders on the subset they care about.
+export function selectChildren(tree: ConversationTreePublic | null, nodeId: string | null): TreeNodePublic[] {
+  if (!tree || !nodeId) return [];
+  return Object.values(tree.nodes)
+    .filter((n) => n.parentNodeId === nodeId)
+    .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export function selectPath(tree: ConversationTreePublic | null, nodeId: string | null): TreeNodePublic[] {
+  if (!tree || !nodeId) return [];
+  const path: TreeNodePublic[] = [];
+  let cur: TreeNodePublic | undefined = tree.nodes[nodeId];
+  while (cur) {
+    path.unshift(cur);
+    cur = cur.parentNodeId ? tree.nodes[cur.parentNodeId] : undefined;
+  }
+  return path;
+}
+
 export function selectIsAnyStreaming(s: PaneStore): boolean {
-  for (const id in s.turns) {
-    if (s.turns[id]?.status === "streaming") return true;
+  if (!s.tree) return false;
+  for (const n of Object.values(s.tree.nodes)) {
+    if (n.status === "streaming" || n.status === "queued") return true;
   }
   return false;
 }
 
-function emptyTurn(turnId: string, prompt: string, status: UiTurnStatus): UiTurn {
-  return { turnId, prompt, text: "", status, toolCalls: [] };
-}
-
 export const usePanes = create<PaneStore>((set, get) => ({
-  sessionId: null,
+  rootSessionId: null,
+  tree: null,
   panes: [],
-  turns: {},
+  nodeToolCalls: {},
   hydrating: false,
   error: null,
 
@@ -74,18 +92,14 @@ export const usePanes = create<PaneStore>((set, get) => ({
       const res = await fetch("/api/state");
       if (!res.ok) throw new Error(`hydrate failed ${res.status}`);
       const data = (await res.json()) as StatePublic;
-      const turns: Record<string, UiTurn> = {};
-      for (const [id, t] of Object.entries(data.turns)) {
-        const status: UiTurnStatus =
-          t.status === "streaming" || t.status === "done" || t.status === "error" || t.status === "queued"
-            ? t.status
-            : "done";
-        turns[id] = { turnId: t.turnId, prompt: t.prompt, text: t.text, status, toolCalls: [] };
-      }
       set({
-        sessionId: data.sessionId,
-        panes: data.panes.map((p) => ({ paneId: p.paneId, turnIds: p.turnIds })),
-        turns,
+        rootSessionId: data.rootSessionId,
+        tree: data.tree,
+        panes: data.panes.map((p) => ({
+          paneId: p.paneId,
+          rootSessionId: p.rootSessionId,
+          currentNodeId: p.currentNodeId,
+        })),
         hydrating: false,
       });
     } catch (err) {
@@ -93,141 +107,188 @@ export const usePanes = create<PaneStore>((set, get) => ({
     }
   },
 
-  applyEvent: (paneId, ev) => {
+  applyEvent: (_paneId, ev) => {
     set((state) => {
       switch (ev.type) {
-        case "session_ready":
-          return { sessionId: ev.sessionId };
-        case "turn_started": {
-          const initialStatus: UiTurnStatus = ev.status === "queued" ? "queued" : "streaming";
-          const turn = emptyTurn(ev.turnId, ev.prompt, initialStatus);
-          const panes = state.panes.map((p) =>
-            p.paneId === paneId && !p.turnIds.includes(ev.turnId)
-              ? { ...p, turnIds: [...p.turnIds, ev.turnId] }
-              : p,
-          );
+        case "node_added": {
+          if (!state.tree) {
+            // Special case: very first event of a new conversation — the
+            // root node arrives before /api/state has been re-queried.
+            // Build a minimal tree from this node.
+            if (ev.node.parentNodeId === null) {
+              const tree: ConversationTreePublic = {
+                version: 1,
+                rootSessionId: ev.node.sessionId,
+                rootNodeId: ev.node.nodeId,
+                nodes: { [ev.node.nodeId]: { ...ev.node } },
+              };
+              return { tree, rootSessionId: ev.node.sessionId };
+            }
+            return {};
+          }
+          if (state.tree.nodes[ev.node.nodeId]) return {};
           return {
-            turns: { ...state.turns, [ev.turnId]: turn },
-            panes,
+            tree: {
+              ...state.tree,
+              nodes: { ...state.tree.nodes, [ev.node.nodeId]: { ...ev.node } },
+            },
           };
         }
+        case "tree_updated": {
+          // Forced refetch — keep state as is, the next /api/state poll fixes things.
+          // (Caller can trigger a refresh externally if needed.)
+          return {};
+        }
+        case "turn_started": {
+          if (!state.tree || !ev.nodeId) return {};
+          const node = state.tree.nodes[ev.nodeId];
+          if (!node) return {};
+          const updated = { ...node, status: ev.status === "queued" ? "queued" : "streaming" } as TreeNodePublic;
+          return { tree: { ...state.tree, nodes: { ...state.tree.nodes, [ev.nodeId]: updated } } };
+        }
         case "turn_status": {
-          const turn = state.turns[ev.turnId];
-          if (!turn) return {};
+          if (!state.tree) return {};
+          const node = state.tree.nodes[ev.turnId];
+          if (!node) return {};
           const next: UiTurnStatus =
             ev.status === "queued" || ev.status === "streaming" || ev.status === "done" || ev.status === "error"
               ? ev.status
               : "done";
-          return { turns: { ...state.turns, [ev.turnId]: { ...turn, status: next } } };
+          return { tree: { ...state.tree, nodes: { ...state.tree.nodes, [ev.turnId]: { ...node, status: next } } } };
         }
         case "text_delta": {
-          const turn = state.turns[ev.turnId];
-          if (!turn) return {};
-          return { turns: { ...state.turns, [ev.turnId]: { ...turn, text: turn.text + ev.text } } };
+          if (!state.tree) return {};
+          const node = state.tree.nodes[ev.turnId];
+          if (!node) return {};
+          return {
+            tree: {
+              ...state.tree,
+              nodes: { ...state.tree.nodes, [ev.turnId]: { ...node, text: node.text + ev.text } },
+            },
+          };
         }
         case "assistant_message": {
-          const turn = state.turns[ev.turnId];
-          if (!turn) return {};
-          // Only fill if no streaming text accumulated (defensive).
-          if (turn.text.length > 0) return {};
-          return { turns: { ...state.turns, [ev.turnId]: { ...turn, text: ev.text } } };
+          if (!state.tree) return {};
+          const node = state.tree.nodes[ev.turnId];
+          if (!node) return {};
+          if (node.text.length > 0) return {};
+          return {
+            tree: {
+              ...state.tree,
+              nodes: { ...state.tree.nodes, [ev.turnId]: { ...node, text: ev.text } },
+            },
+          };
         }
         case "tool_use_start": {
-          const turn = state.turns[ev.turnId];
-          if (!turn) return {};
+          const existing = state.nodeToolCalls[ev.turnId] ?? [];
+          if (existing.some((tc) => tc.blockIndex === ev.blockIndex)) return {};
           return {
-            turns: {
-              ...state.turns,
-              [ev.turnId]: {
-                ...turn,
-                toolCalls: [
-                  ...turn.toolCalls,
-                  { toolName: ev.toolName, toolUseId: ev.toolUseId, partialJson: "", blockIndex: ev.blockIndex },
-                ],
-              },
+            nodeToolCalls: {
+              ...state.nodeToolCalls,
+              [ev.turnId]: [
+                ...existing,
+                { toolName: ev.toolName, toolUseId: ev.toolUseId, partialJson: "", blockIndex: ev.blockIndex },
+              ],
             },
           };
         }
         case "tool_use_input_delta": {
-          const turn = state.turns[ev.turnId];
-          if (!turn) return {};
-          const toolCalls = turn.toolCalls.map((tc) =>
+          const existing = state.nodeToolCalls[ev.turnId] ?? [];
+          const updated = existing.map((tc) =>
             tc.blockIndex === ev.blockIndex ? { ...tc, partialJson: tc.partialJson + ev.partialJson } : tc,
           );
-          return { turns: { ...state.turns, [ev.turnId]: { ...turn, toolCalls } } };
+          return { nodeToolCalls: { ...state.nodeToolCalls, [ev.turnId]: updated } };
         }
         case "done": {
-          const turn = state.turns[ev.turnId];
-          if (!turn) return {};
+          if (!state.tree) return {};
+          const node = state.tree.nodes[ev.turnId];
+          if (!node) return {};
           return {
-            turns: {
-              ...state.turns,
-              [ev.turnId]: { ...turn, status: "done", text: turn.text.length > 0 ? turn.text : ev.result },
+            tree: {
+              ...state.tree,
+              nodes: {
+                ...state.tree.nodes,
+                [ev.turnId]: { ...node, status: "done", text: node.text.length > 0 ? node.text : ev.result },
+              },
             },
           };
         }
         case "error": {
           if (!ev.turnId) return { error: ev.message };
-          const turn = state.turns[ev.turnId];
-          if (!turn) return { error: ev.message };
-          return { turns: { ...state.turns, [ev.turnId]: { ...turn, status: "error" } }, error: ev.message };
+          if (!state.tree) return { error: ev.message };
+          const node = state.tree.nodes[ev.turnId];
+          if (!node) return { error: ev.message };
+          return {
+            tree: { ...state.tree, nodes: { ...state.tree.nodes, [ev.turnId]: { ...node, status: "error" } } },
+            error: ev.message,
+          };
         }
+        case "session_ready":
+          return {};
         default:
           return {};
       }
     });
   },
 
-  registerPane: (paneId) => {
+  registerPane: (paneId, currentNodeId) => {
     set((state) =>
       state.panes.some((p) => p.paneId === paneId)
         ? {}
-        : { panes: [...state.panes, { paneId, turnIds: [] }] },
+        : { panes: [...state.panes, { paneId, rootSessionId: state.rootSessionId, currentNodeId }] },
     );
   },
 
-  bootstrapWithPrompt: async (prompt) => {
-    const res = await fetch("/api/panes", {
+  startConversation: async (prompt) => {
+    const res = await fetch("/api/conversation", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt }),
     });
     if (!res.ok) {
-      const text = await res.text();
-      set({ error: `bootstrap failed: ${text}` });
+      set({ error: `start conversation failed: ${await res.text()}` });
       return null;
     }
-    const data = (await res.json()) as { paneId: string };
-    get().registerPane(data.paneId);
+    const data = (await res.json()) as { paneId: string; rootSessionId: string; rootNodeId: string };
+    get().registerPane(data.paneId, data.rootNodeId);
+    set({ rootSessionId: data.rootSessionId });
     return data.paneId;
   },
 
-  sendInline: async (paneId, prompt) => {
+  sendInPane: async (paneId, prompt, parentNodeId) => {
     const res = await fetch(`/api/panes/${paneId}/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, parentNodeId }),
     });
     if (!res.ok) {
-      const text = await res.text();
-      set({ error: `send failed: ${text}` });
+      set({ error: `send failed: ${await res.text()}` });
+      return;
     }
+    const data = (await res.json()) as { nodeId: string };
+    // Auto-navigate the pane to the new child. Server already did this in
+    // its state; we mirror it client-side so the UI updates immediately
+    // (don't wait for /api/state poll).
+    set((state) => ({
+      panes: state.panes.map((p) =>
+        p.paneId === paneId ? { ...p, currentNodeId: data.nodeId } : p,
+      ),
+    }));
   },
 
-  continueInNewColumn: async (srcPaneId, prompt) => {
-    const res = await fetch(`/api/panes/${srcPaneId}/continue-in-new-column`, {
+  navigatePane: async (paneId, nodeId) => {
+    // Optimistic: update client-side first, then fire-and-forget the server.
+    // If the server rejects, the next /api/state hydrate will correct us.
+    set((state) => ({
+      panes: state.panes.map((p) =>
+        p.paneId === paneId ? { ...p, currentNodeId: nodeId } : p,
+      ),
+    }));
+    await fetch(`/api/panes/${paneId}/navigate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      set({ error: `new column failed: ${text}` });
-      return null;
-    }
-    const data = (await res.json()) as { paneId: string };
-    get().registerPane(data.paneId);
-    return data.paneId;
+      body: JSON.stringify({ nodeId }),
+    }).catch(() => {});
   },
 
   closePane: async (paneId) => {
@@ -235,6 +296,18 @@ export const usePanes = create<PaneStore>((set, get) => ({
     set((state) => ({
       panes: state.panes.filter((p) => p.paneId !== paneId),
     }));
+  },
+
+  deleteNode: async (nodeId) => {
+    const tree = get().tree;
+    if (!tree) return;
+    const res = await fetch(`/api/tree/${tree.rootSessionId}/nodes/${nodeId}`, { method: "DELETE" });
+    if (!res.ok) {
+      set({ error: `delete failed: ${await res.text()}` });
+      return;
+    }
+    // Refetch after deletion — tree shape and pane currentNodeIds may have shifted.
+    await get().hydrate();
   },
 
   setError: (msg) => set({ error: msg }),
@@ -245,7 +318,7 @@ export const usePanes = create<PaneStore>((set, get) => ({
       set({ error: `new conversation failed: ${await res.text()}` });
       return;
     }
-    set({ sessionId: null, panes: [], turns: {}, error: null });
+    set({ rootSessionId: null, tree: null, panes: [], nodeToolCalls: {}, error: null });
   },
 
   loadHistorySession: async (sessionId) => {
@@ -258,7 +331,7 @@ export const usePanes = create<PaneStore>((set, get) => ({
       set({ error: `load failed: ${await res.text()}` });
       return;
     }
-    set({ sessionId: null, panes: [], turns: {}, error: null });
+    set({ rootSessionId: null, tree: null, panes: [], nodeToolCalls: {}, error: null });
     await get().hydrate();
   },
 }));

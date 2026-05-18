@@ -1,115 +1,129 @@
 import { useEffect, useRef, useState } from "react";
-import { usePanes, type UiTurn } from "../state/panes.ts";
+import {
+  usePanes, selectPath, selectChildren, type UiToolCall,
+} from "../state/panes.ts";
 import { openPaneStream } from "../lib/sse-client.ts";
 import { MarkdownMessage } from "./MarkdownMessage.tsx";
 import { InputBar } from "./InputBar.tsx";
 import { ToolUseCard } from "./ToolUseCard.tsx";
+import { BranchButtons } from "./BranchButtons.tsx";
+import { Breadcrumb } from "./Breadcrumb.tsx";
+import type { TreeNodePublic } from "../../types/events.ts";
 
 interface Props {
   paneId: string;
   isRightmost: boolean;
 }
 
-export function PaneView({ paneId, isRightmost }: Props) {
+export function PaneView({ paneId }: Props) {
   const pane = usePanes((s) => s.panes.find((p) => p.paneId === paneId));
-  const turns = usePanes((s) => s.turns);
+  const tree = usePanes((s) => s.tree);
+  const nodeToolCalls = usePanes((s) => s.nodeToolCalls);
   const applyEvent = usePanes((s) => s.applyEvent);
-  const sendInline = usePanes((s) => s.sendInline);
-  const continueInNewColumn = usePanes((s) => s.continueInNewColumn);
+  const sendInPane = usePanes((s) => s.sendInPane);
+  const navigatePane = usePanes((s) => s.navigatePane);
   const closePane = usePanes((s) => s.closePane);
-  const sessionId = usePanes((s) => s.sessionId);
+  const deleteNode = usePanes((s) => s.deleteNode);
+  const rootSessionId = usePanes((s) => s.rootSessionId);
   const [draft, setDraft] = useState("");
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
 
-  // Open SSE for this pane once.
   useEffect(() => {
     const close = openPaneStream(paneId, (ev) => applyEvent(paneId, ev));
     return () => close();
   }, [paneId, applyEvent]);
 
-  // Autoscroll
-  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  // Autoscroll: stay glued to the bottom while a turn streams or a new node opens.
+  const path = pane ? selectPath(tree, pane.currentNodeId) : [];
+  const currentNode = path.length > 0 ? path[path.length - 1] : undefined;
+  const streamingText = currentNode?.text ?? "";
   useEffect(() => {
     const el = transcriptRef.current;
     if (!el) return;
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     if (isNearBottom) el.scrollTop = el.scrollHeight;
-  });
+  }, [streamingText, currentNode?.nodeId]);
 
   if (!pane) return null;
 
-  const isStreaming = pane.turnIds.some((id) => turns[id]?.status === "streaming");
-  const firstTurn = pane.turnIds.length > 0 ? turns[pane.turnIds[0]!] : undefined;
-  const pinnedTitle = firstTurn?.prompt ?? "";
+  if (!currentNode) {
+    return (
+      <div className="pane is-rightmost" ref={containerRef} data-pane-id={paneId}>
+        <div className="pane-header">
+          <div className="pane-header-row">
+            <span className="session">no conversation loaded</span>
+            <button className="close" onClick={() => closePane(paneId)} title="Close pane">×</button>
+          </div>
+        </div>
+        <div className="empty-state">Ask anything to start.</div>
+      </div>
+    );
+  }
+
+  const children = selectChildren(tree, currentNode.nodeId);
+  const ancestors = path.slice(0, -1);  // everything above the current node
+  const isStreaming = currentNode.status === "streaming" || currentNode.status === "queued";
 
   const handleSend = async () => {
     const prompt = draft.trim();
     if (!prompt) return;
     setDraft("");
-    await sendInline(paneId, prompt);
+    await sendInPane(paneId, prompt, currentNode.nodeId);
   };
 
-  const handleNewColumn = async () => {
-    const prompt = draft.trim();
-    if (!prompt) return;
-    setDraft("");
-    await continueInNewColumn(paneId, prompt);
-  };
-
-  const paneClass = `pane${isRightmost ? " is-rightmost" : ""}`;
   return (
-    <div className={paneClass} ref={containerRef} data-pane-id={paneId}>
+    <div className="pane is-rightmost" ref={containerRef} data-pane-id={paneId}>
       <div className="pane-header">
         <div className="pane-header-row">
           <div>
             {isStreaming ? <span className="streaming" /> : null}
             <span className="session">
-              {sessionId ? `session ${sessionId.slice(0, 8)}` : "no session yet"}
+              {rootSessionId ? `conversation ${rootSessionId.slice(0, 8)}` : "no session"}
             </span>
           </div>
           <button className="close" onClick={() => closePane(paneId)} title="Close pane">×</button>
         </div>
-        {pinnedTitle.length > 0 ? (
-          <div className="pane-pinned-question" title={pinnedTitle}>{pinnedTitle}</div>
-        ) : null}
       </div>
       <div className="transcript" ref={transcriptRef}>
-        {pane.turnIds.length === 0 ? (
-          <div className="empty-state">Ask anything to start.</div>
-        ) : (
-          pane.turnIds.map((id, idx) => {
-            const t = turns[id];
-            if (!t) return null;
-            return <Turn key={id} turn={t} hidePrompt={idx === 0} />;
-          })
-        )}
+        <Breadcrumb ancestors={ancestors} onNavigate={(id) => navigatePane(paneId, id)} />
+        <NodeView
+          node={currentNode}
+          toolCalls={nodeToolCalls[currentNode.nodeId] ?? []}
+          isRoot={ancestors.length === 0}
+        />
+        <BranchButtons
+          children={children}
+          onNavigate={(id) => navigatePane(paneId, id)}
+          onDelete={(id) => deleteNode(id)}
+        />
       </div>
       <InputBar
-        showInlineButton={isRightmost}
         value={draft}
         onChange={setDraft}
         onSend={handleSend}
-        onSendInNewColumn={handleNewColumn}
+        placeholder={isStreaming ? "Waiting for response…" : "Ask a follow-up — creates a child of this response."}
+        disabled={isStreaming}
       />
     </div>
   );
 }
 
-function Turn({ turn, hidePrompt }: { turn: UiTurn; hidePrompt?: boolean }) {
+function NodeView({ node, toolCalls, isRoot }: { node: TreeNodePublic; toolCalls: UiToolCall[]; isRoot: boolean }) {
   return (
     <div className="turn">
-      {hidePrompt ? null : <div className="turn-prompt">{turn.prompt}</div>}
-      {turn.toolCalls.length > 0 ? (
+      {isRoot ? null : <div className="turn-prompt">{node.prompt}</div>}
+      {toolCalls.length > 0 ? (
         <div className="tool-list">
-          {turn.toolCalls.map((tc, i) => (
+          {toolCalls.map((tc, i) => (
             <ToolUseCard key={`${tc.toolUseId || "tc"}-${tc.blockIndex}-${i}`} call={tc} />
           ))}
         </div>
       ) : null}
-      <div className={`turn-answer${turn.status === "streaming" ? " streaming" : ""}`}>
-        {turn.text.length > 0 ? (
-          <MarkdownMessage text={turn.text} />
-        ) : turn.status === "queued" ? (
+      <div className={`turn-answer${node.status === "streaming" ? " streaming" : ""}`}>
+        {node.text.length > 0 ? (
+          <MarkdownMessage text={node.text} />
+        ) : node.status === "queued" ? (
           <span style={{ color: "var(--text-dim)" }}>queued — will start when previous turn finishes</span>
         ) : (
           <span style={{ color: "var(--text-dim)" }}>…</span>

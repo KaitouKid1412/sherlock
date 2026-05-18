@@ -32,8 +32,9 @@ function readSidebarCollapsed(): boolean {
 
 export function App() {
   const panes = usePanes((s) => s.panes);
+  const tree = usePanes((s) => s.tree);
   const hydrate = usePanes((s) => s.hydrate);
-  const bootstrapWithPrompt = usePanes((s) => s.bootstrapWithPrompt);
+  const startConversation = usePanes((s) => s.startConversation);
   const [draft, setDraft] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
 
@@ -47,9 +48,6 @@ export function App() {
     };
     beat();
     const id = window.setInterval(beat, 10_000);
-    // After laptop wake / tab focus, fire an immediate heartbeat so the server
-    // sees us alive within ~ms instead of waiting up to 10s for the next tick.
-    // Pairs with the server-side time-jump detection.
     const onVisible = () => { if (!document.hidden) beat(); };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
@@ -71,12 +69,15 @@ export function App() {
   const columns = useMemo(() => groupIntoColumns(panes), [panes]);
   const rightmostPaneId = panes[panes.length - 1]?.paneId ?? "";
 
-  const handleBootstrap = async () => {
+  const handleStart = async () => {
     const prompt = draft.trim();
     if (!prompt) return;
     setDraft("");
-    await bootstrapWithPrompt(prompt);
+    await startConversation(prompt);
   };
+
+  // Empty state: no conversation loaded at all. Show the welcome composer.
+  const noConversation = !tree || panes.length === 0;
 
   return (
     <div className="root">
@@ -84,7 +85,7 @@ export function App() {
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed((v) => !v)}
       />
-      {panes.length === 0 ? (
+      {noConversation ? (
         <div className="app">
           <div className="pane is-rightmost" style={{ flex: "1 1 100%" }}>
             <div className="pane-header">
@@ -94,11 +95,9 @@ export function App() {
             </div>
             <div className="empty-state">What would you like to research?</div>
             <InputBar
-              showInlineButton={true}
               value={draft}
               onChange={setDraft}
-              onSend={handleBootstrap}
-              onSendInNewColumn={handleBootstrap}
+              onSend={handleStart}
             />
           </div>
         </div>

@@ -51,7 +51,7 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
   const [applyMode, setApplyMode] = useState<ApplyMode>("idle");
   const [quitting, setQuitting] = useState<boolean>(false);
   const [now, setNow] = useState<number>(Date.now());
-  const currentSessionId = usePanes((s) => s.sessionId);
+  const currentSessionId = usePanes((s) => s.rootSessionId);
   const panes = usePanes((s) => s.panes);
   const loadHistorySession = usePanes((s) => s.loadHistorySession);
   const newConversation = usePanes((s) => s.newConversation);

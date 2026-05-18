@@ -4,23 +4,33 @@ import { spawnClaude, type RunningClaude } from "./claude-runner.ts";
 import { createStreamParser } from "./stream-parser.ts";
 import { startSse, type SseChannel } from "./sse.ts";
 import { listHistory, loadSession } from "./history.ts";
-import type { PanePublic, ServerSentEvent, StatePublic, TurnPublic } from "../types/events.ts";
+import {
+  loadTree, saveTree, createTree, addNode, canLinearContinue,
+  removeSubtree, synthesizeTreeFromTurns,
+} from "./tree.ts";
+import { snapshotSession, deleteSessionFile, findSessionTailUuid } from "./fork.ts";
+import type {
+  PanePublic, ServerSentEvent, StatePublic, TurnPublic, ConversationTreePublic, TreeNodePublic,
+} from "../types/events.ts";
 
 interface PaneState extends PanePublic {}
 interface TurnState extends TurnPublic {}
 
 interface QueuedOp {
   paneId: string;
-  turnId: string;
+  nodeId: string;
 }
 
+// Server state. One conversation (one tree) loaded at a time; multiple panes
+// can be open against it, each pinned to its own currentNodeId.
 const state = {
-  sessionId: null as string | null,
+  rootSessionId: null as string | null,
+  tree: null as ConversationTreePublic | null,
   panes: [] as PaneState[],
-  turns: new Map<string, TurnState>(),
+  turns: new Map<string, TurnState>(),  // runtime streaming buffers, keyed by nodeId
   eventLog: new Map<string, ServerSentEvent[]>(),
   subscribers: new Map<string, Set<SseChannel>>(),
-  running: new Map<string, RunningClaude>(),
+  running: new Map<string, RunningClaude>(),  // keyed by nodeId
   queue: [] as QueuedOp[],
 };
 
@@ -39,20 +49,27 @@ function resetState(): void {
   state.turns.clear();
   state.panes = [];
   state.queue = [];
-  state.sessionId = null;
+  state.rootSessionId = null;
+  state.tree = null;
 }
 
-function append(paneId: string, ev: ServerSentEvent): void {
-  if (!state.eventLog.has(paneId)) state.eventLog.set(paneId, []);
-  state.eventLog.get(paneId)!.push(ev);
-  const subs = state.subscribers.get(paneId);
-  if (subs) for (const s of subs) s.send(ev);
+function broadcast(ev: ServerSentEvent): void {
+  // Conversation-scoped broadcast: every pane in the current conversation
+  // sees every event, so a node spawned in pane A shows up live in pane B.
+  // Event log is also keyed per-pane (for replay on SSE reconnect).
+  for (const pane of state.panes) {
+    if (!state.eventLog.has(pane.paneId)) state.eventLog.set(pane.paneId, []);
+    state.eventLog.get(pane.paneId)!.push(ev);
+    const subs = state.subscribers.get(pane.paneId);
+    if (subs) for (const s of subs) s.send(ev);
+  }
 }
 
-function createPane(): PaneState {
+function createPane(currentNodeId: string | null): PaneState {
   const pane: PaneState = {
     paneId: randomUUID(),
-    turnIds: [],
+    rootSessionId: state.rootSessionId,
+    currentNodeId,
     createdAt: Date.now(),
   };
   state.panes.push(pane);
@@ -60,20 +77,15 @@ function createPane(): PaneState {
   return pane;
 }
 
-function startTurn(paneId: string, prompt: string): TurnState {
-  const willRunNow = state.running.size === 0;
-  const turn: TurnState = {
-    turnId: randomUUID(),
-    prompt,
-    text: "",
-    status: willRunNow ? "streaming" : "queued",
-    startedAt: Date.now(),
+function turnFromNode(node: TreeNodePublic): TurnState {
+  return {
+    turnId: node.nodeId,
+    prompt: node.prompt,
+    text: node.text,
+    status: node.status,
+    startedAt: node.createdAt,
+    nodeId: node.nodeId,
   };
-  state.turns.set(turn.turnId, turn);
-  const pane = state.panes.find((p) => p.paneId === paneId);
-  if (pane) pane.turnIds.push(turn.turnId);
-  append(paneId, { type: "turn_started", turnId: turn.turnId, prompt, status: turn.status });
-  return turn;
 }
 
 function enqueue(op: QueuedOp): void {
@@ -84,116 +96,187 @@ function drainQueue(): void {
   if (state.running.size > 0) return;
   while (state.queue.length > 0) {
     const op = state.queue.shift()!;
-    const pane = state.panes.find((p) => p.paneId === op.paneId);
-    const turn = state.turns.get(op.turnId);
-    if (!pane || !turn || turn.status === "cancelled") continue;
-    turn.status = "streaming";
-    append(pane.paneId, { type: "turn_status", turnId: turn.turnId, status: "streaming" });
-    runTurn(pane, turn);
+    if (!state.tree) continue;
+    const node = state.tree.nodes[op.nodeId];
+    if (!node || node.status === "cancelled") continue;
+    node.status = "streaming";
+    broadcast({ type: "turn_status", turnId: node.nodeId, status: "streaming" });
+    runNode(node);
     return;
   }
 }
 
-function runTurn(pane: PaneState, turn: TurnState): void {
-  const isBootstrap = state.sessionId === null;
-  if (isBootstrap) state.sessionId = randomUUID();
+function runNode(node: TreeNodePublic): void {
+  if (!state.tree) return;
+  const tree = state.tree;
+  const isRoot = node.parentNodeId === null;
   const running = spawnClaude({
-    prompt: turn.prompt,
-    bootstrap: isBootstrap ? { sessionId: state.sessionId! } : undefined,
-    resume: isBootstrap ? undefined : { sessionId: state.sessionId! },
+    prompt: node.prompt,
+    bootstrap: isRoot ? { sessionId: node.sessionId } : undefined,
+    resume: isRoot ? undefined : { sessionId: node.sessionId },
   });
-  state.running.set(pane.paneId, running);
+  state.running.set(node.nodeId, running);
 
   const parser = createStreamParser(
-    { turnId: turn.turnId },
+    { turnId: node.nodeId },
     (ev) => {
       if (ev.type === "text_delta") {
-        turn.text += ev.text;
-      } else if (ev.type === "assistant_message" && turn.text.length === 0) {
-        turn.text = ev.text;
+        node.text += ev.text;
+      } else if (ev.type === "assistant_message" && node.text.length === 0) {
+        node.text = ev.text;
       } else if (ev.type === "done") {
-        turn.status = "done";
-        turn.endedAt = Date.now();
+        node.status = "done";
       } else if (ev.type === "error") {
-        turn.status = "error";
-        turn.endedAt = Date.now();
+        node.status = "error";
       }
-      append(pane.paneId, ev);
+      broadcast(ev);
     },
     debugLog,
   );
 
   running.onLine(parser);
-  running.onClose((code) => {
-    state.running.delete(pane.paneId);
-    if (turn.status === "streaming") {
-      turn.status = code === 0 ? "done" : "error";
-      turn.endedAt = Date.now();
-      append(pane.paneId, { type: "done", turnId: turn.turnId, result: turn.text });
+  running.onClose(async (code) => {
+    state.running.delete(node.nodeId);
+    if (node.status === "streaming") {
+      node.status = code === 0 ? "done" : "error";
+      broadcast({ type: "done", turnId: node.nodeId, result: node.text });
     }
+    // Capture the just-written .jsonl tail uuid as this node's fork point.
+    // Done after onClose because Claude Code finishes flushing its file write
+    // by the time the child process exits.
+    try {
+      const tail = await findSessionTailUuid(node.sessionId);
+      if (tail) node.claudeUuid = tail;
+    } catch {
+      /* best-effort */
+    }
+    // Persist tree on every turn completion so a crash mid-conversation
+    // doesn't lose anything that's already been generated.
+    void saveTree(tree);
     drainQueue();
   });
 }
 
+async function addChildNode(parentNodeId: string, prompt: string): Promise<TreeNodePublic> {
+  if (!state.tree) throw new Error("no tree loaded");
+  const tree = state.tree;
+  const parent = tree.nodes[parentNodeId];
+  if (!parent) throw new Error(`parent node ${parentNodeId} not in tree`);
+
+  // Decide: linear continuation (reuse parent's session) or fork (snapshot).
+  let childSessionId: string;
+  if (canLinearContinue(tree, parentNodeId)) {
+    childSessionId = parent.sessionId;
+  } else {
+    if (!parent.claudeUuid) {
+      // We don't have the parent's tail UUID — common for legacy (synthesized)
+      // trees where the snapshot point wasn't recorded. Fall back to linear:
+      // accept that the parent's session will get extended even though it has
+      // a child elsewhere. In practice this only happens on the FIRST branch
+      // off a legacy conversation, and the worst case is "we re-extend the
+      // original .jsonl alongside the older branch."
+      childSessionId = parent.sessionId;
+    } else {
+      const snap = await snapshotSession(parent.sessionId, parent.claudeUuid);
+      childSessionId = snap.newSessionId;
+    }
+  }
+
+  const child = addNode(tree, parentNodeId, childSessionId, prompt);
+  return child;
+}
+
 export function registerPaneRoutes(fastify: FastifyInstance): void {
   fastify.get("/api/state", async (): Promise<StatePublic> => ({
-    sessionId: state.sessionId,
+    rootSessionId: state.rootSessionId,
     panes: state.panes,
     turns: Object.fromEntries(state.turns),
+    tree: state.tree,
   }));
 
-  fastify.post<{ Body: { prompt?: string } }>("/api/panes", async (req, reply) => {
+  // Create a brand-new conversation: tree, root node, initial pane all at once.
+  fastify.post<{ Body: { prompt?: string } }>("/api/conversation", async (req, reply) => {
     const prompt = req.body?.prompt;
     if (!prompt || typeof prompt !== "string") {
       reply.code(400);
       return { error: "prompt required" };
     }
-    if (state.panes.length > 0) {
+    if (state.tree !== null) {
       reply.code(409);
-      return { error: "root pane already exists; POST /api/panes/:id/send instead" };
+      return { error: "conversation already exists; use new-conversation to reset first" };
     }
-    const pane = createPane();
-    const turn = startTurn(pane.paneId, prompt);
-    if (turn.status === "streaming") runTurn(pane, turn);
-    else enqueue({ paneId: pane.paneId, turnId: turn.turnId });
-    return { paneId: pane.paneId, turnId: turn.turnId };
+    const rootSessionId = randomUUID();
+    state.rootSessionId = rootSessionId;
+    state.tree = createTree(rootSessionId, prompt);
+    const root = state.tree.nodes[state.tree.rootNodeId]!;
+    const pane = createPane(root.nodeId);
+    broadcast({ type: "node_added", node: root });
+    broadcast({ type: "turn_started", turnId: root.nodeId, prompt: root.prompt, status: root.status, nodeId: root.nodeId });
+    if (state.running.size === 0) {
+      runNode(root);
+    } else {
+      enqueue({ paneId: pane.paneId, nodeId: root.nodeId });
+    }
+    return { rootSessionId, rootNodeId: root.nodeId, paneId: pane.paneId };
   });
 
-  fastify.post<{ Params: { id: string }; Body: { prompt?: string } }>(
+  // Send a follow-up in this pane: creates a child of pane.currentNodeId,
+  // auto-navigates the pane to the new child, runs Claude Code.
+  fastify.post<{ Params: { id: string }; Body: { prompt?: string; parentNodeId?: string } }>(
     "/api/panes/:id/send",
     async (req, reply) => {
       const pane = state.panes.find((p) => p.paneId === req.params.id);
       if (!pane) { reply.code(404); return { error: "pane not found" }; }
-      const isLatest = state.panes[state.panes.length - 1]?.paneId === pane.paneId;
-      if (!isLatest) { reply.code(409); return { error: "send is only allowed in the rightmost pane" }; }
+      if (!state.tree) { reply.code(409); return { error: "no conversation loaded" }; }
       const prompt = req.body?.prompt;
       if (!prompt || typeof prompt !== "string") {
         reply.code(400);
         return { error: "prompt required" };
       }
-      const turn = startTurn(pane.paneId, prompt);
-      if (turn.status === "streaming") runTurn(pane, turn);
-      else enqueue({ paneId: pane.paneId, turnId: turn.turnId });
+      const parentNodeId = req.body?.parentNodeId ?? pane.currentNodeId;
+      if (!parentNodeId) { reply.code(400); return { error: "no parent node — pane has no current node" }; }
+      const parent = state.tree.nodes[parentNodeId];
+      if (!parent) { reply.code(404); return { error: "parent node not in tree" }; }
+      const child = await addChildNode(parentNodeId, prompt);
+      pane.currentNodeId = child.nodeId;
+      broadcast({ type: "node_added", node: child });
+      broadcast({ type: "turn_started", turnId: child.nodeId, prompt: child.prompt, status: child.status, nodeId: child.nodeId });
+      if (state.running.size === 0) {
+        runNode(child);
+      } else {
+        child.status = "queued";
+        enqueue({ paneId: pane.paneId, nodeId: child.nodeId });
+      }
       reply.code(202);
-      return { turnId: turn.turnId, status: turn.status };
+      return { nodeId: child.nodeId, status: child.status };
     },
   );
 
-  fastify.post<{ Params: { id: string }; Body: { prompt?: string } }>(
-    "/api/panes/:id/continue-in-new-column",
+  // Move the pane's view to a different node in the same tree. No model call.
+  fastify.post<{ Params: { id: string }; Body: { nodeId?: string } }>(
+    "/api/panes/:id/navigate",
     async (req, reply) => {
-      const src = state.panes.find((p) => p.paneId === req.params.id);
-      if (!src) { reply.code(404); return { error: "source pane not found" }; }
-      const prompt = req.body?.prompt;
-      if (!prompt || typeof prompt !== "string") {
-        reply.code(400);
-        return { error: "prompt required" };
-      }
-      const pane = createPane();
-      const turn = startTurn(pane.paneId, prompt);
-      if (turn.status === "streaming") runTurn(pane, turn);
-      else enqueue({ paneId: pane.paneId, turnId: turn.turnId });
-      return { paneId: pane.paneId, turnId: turn.turnId, status: turn.status };
+      const pane = state.panes.find((p) => p.paneId === req.params.id);
+      if (!pane) { reply.code(404); return { error: "pane not found" }; }
+      const nodeId = req.body?.nodeId;
+      if (!nodeId || typeof nodeId !== "string") { reply.code(400); return { error: "nodeId required" }; }
+      if (!state.tree || !state.tree.nodes[nodeId]) { reply.code(404); return { error: "node not in tree" }; }
+      pane.currentNodeId = nodeId;
+      return { ok: true, currentNodeId: nodeId };
+    },
+  );
+
+  // Spawn a new pane viewing the same tree. Used when "Explain" wants to
+  // open a child node in a sibling column instead of replacing the current
+  // pane's view. (Optional; the default Explain UX replaces in place.)
+  fastify.post<{ Body: { currentNodeId?: string } }>(
+    "/api/panes",
+    async (req, reply) => {
+      if (!state.tree) { reply.code(409); return { error: "no conversation loaded" }; }
+      const startNodeId = req.body?.currentNodeId ?? state.tree.rootNodeId;
+      if (!state.tree.nodes[startNodeId]) { reply.code(404); return { error: "currentNodeId not in tree" }; }
+      const pane = createPane(startNodeId);
+      return { paneId: pane.paneId, currentNodeId: pane.currentNodeId };
     },
   );
 
@@ -207,6 +290,12 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
     if (!state.subscribers.has(pane.paneId)) state.subscribers.set(pane.paneId, new Set());
     state.subscribers.get(pane.paneId)!.add(channel);
 
+    // Replay: send the tree's current state, then any buffered conversation events.
+    if (state.tree) {
+      for (const node of Object.values(state.tree.nodes)) {
+        channel.send({ type: "node_added", node });
+      }
+    }
     const log = state.eventLog.get(pane.paneId) ?? [];
     for (const ev of log) channel.send(ev);
 
@@ -219,55 +308,107 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
     return await listHistory(process.cwd());
   });
 
+  // Returns the tree without touching state — used by clients that want
+  // to inspect a conversation tree (currently unused but cheap to expose).
+  fastify.get<{ Params: { rootSessionId: string } }>(
+    "/api/tree/:rootSessionId",
+    async (req, reply) => {
+      const tree = await loadTree(req.params.rootSessionId);
+      if (!tree) { reply.code(404); return { error: "tree not found" }; }
+      return tree;
+    },
+  );
+
   fastify.post("/api/conversation/new", async () => {
     resetState();
     return { ok: true };
   });
 
+  // Load an existing conversation into server state. If the session has a
+  // tree.json, load it; otherwise synthesize one from the legacy linear .jsonl
+  // so old conversations open as a single-spine tree.
   fastify.post<{ Body: { sessionId?: string } }>("/api/conversation/load", async (req, reply) => {
     const sid = req.body?.sessionId;
     if (!sid || typeof sid !== "string") {
       reply.code(400);
       return { error: "sessionId required" };
     }
-    const loaded = await loadSession(process.cwd(), sid);
-    if (!loaded || loaded.turns.length === 0) {
-      reply.code(404);
-      return { error: "session not found or empty" };
+    let tree = await loadTree(sid);
+    if (!tree) {
+      // Legacy path: build tree on the fly from the .jsonl.
+      const loaded = await loadSession(process.cwd(), sid);
+      if (!loaded || loaded.turns.length === 0) {
+        reply.code(404);
+        return { error: "session not found or empty" };
+      }
+      tree = synthesizeTreeFromTurns(
+        sid,
+        loaded.turns.map((t) => ({ prompt: t.prompt, text: t.text, lastClaudeUuid: t.lastClaudeUuid ?? "" })),
+      );
+      await saveTree(tree);
     }
     resetState();
-    state.sessionId = loaded.sessionId;
-    const pane = createPane();
-    for (const t of loaded.turns) {
-      const turn: TurnState = {
-        turnId: randomUUID(),
-        prompt: t.prompt,
-        text: t.text,
-        status: "done",
-        startedAt: Date.now(),
-        endedAt: Date.now(),
-      };
-      state.turns.set(turn.turnId, turn);
-      pane.turnIds.push(turn.turnId);
-    }
-    return { paneId: pane.paneId, turnCount: loaded.turns.length, sessionId: loaded.sessionId };
+    state.rootSessionId = tree.rootSessionId;
+    state.tree = tree;
+    const pane = createPane(tree.rootNodeId);
+    return { paneId: pane.paneId, rootSessionId: tree.rootSessionId, rootNodeId: tree.rootNodeId };
   });
 
   fastify.delete<{ Params: { id: string } }>("/api/panes/:id", async (req, reply) => {
     const idx = state.panes.findIndex((p) => p.paneId === req.params.id);
     if (idx === -1) { reply.code(404); return { error: "pane not found" }; }
-    const running = state.running.get(req.params.id);
-    if (running) running.kill();
-    state.running.delete(req.params.id);
     state.subscribers.get(req.params.id)?.forEach((s) => s.close());
     state.subscribers.delete(req.params.id);
     state.eventLog.delete(req.params.id);
-    state.queue = state.queue.filter((op) => op.paneId !== req.params.id);
-    const pane = state.panes[idx]!;
-    for (const turnId of pane.turnIds) state.turns.delete(turnId);
     state.panes.splice(idx, 1);
-    if (state.panes.length === 0) state.sessionId = null;
-    drainQueue();
+    // Closing a pane never affects the tree or any running turn (turns are
+    // bound to node IDs, not pane IDs).
     return { ok: true };
   });
+
+  // Delete a subtree (a branch). Removes nodes from the tree and the
+  // associated Claude Code session files for any session that's now
+  // unreferenced by the remaining tree.
+  fastify.delete<{ Params: { rootSessionId: string; nodeId: string } }>(
+    "/api/tree/:rootSessionId/nodes/:nodeId",
+    async (req, reply) => {
+      if (!state.tree || state.tree.rootSessionId !== req.params.rootSessionId) {
+        reply.code(404);
+        return { error: "tree not loaded or mismatched root" };
+      }
+      const tree = state.tree;
+      const target = tree.nodes[req.params.nodeId];
+      if (!target) { reply.code(404); return { error: "node not in tree" }; }
+      if (target.parentNodeId === null) { reply.code(400); return { error: "cannot delete root node — use /api/conversation/new" }; }
+      // Kill any running Claude processes for nodes in the subtree.
+      const removed = removeSubtree(tree, target.nodeId);
+      const removedIds = new Set(removed.map((n) => n.nodeId));
+      for (const [nodeId, running] of state.running.entries()) {
+        if (removedIds.has(nodeId)) { running.kill(); state.running.delete(nodeId); }
+      }
+      // Repoint any pane that was viewing a removed node to its closest
+      // surviving ancestor (or the tree root as fallback).
+      for (const pane of state.panes) {
+        if (pane.currentNodeId && removedIds.has(pane.currentNodeId)) {
+          let cur: TreeNodePublic | undefined = target.parentNodeId ? tree.nodes[target.parentNodeId] : undefined;
+          pane.currentNodeId = cur?.nodeId ?? tree.rootNodeId;
+        }
+      }
+      // Delete the underlying Claude Code .jsonl for any session that's now
+      // unreferenced. The root session stays because deleting it would
+      // effectively delete the conversation; that's handled by /new.
+      const survivingSessions = new Set(Object.values(tree.nodes).map((n) => n.sessionId));
+      for (const r of removed) {
+        if (!survivingSessions.has(r.sessionId) && r.sessionId !== tree.rootSessionId) {
+          await deleteSessionFile(r.sessionId);
+        }
+      }
+      await saveTree(tree);
+      broadcast({ type: "tree_updated", rootSessionId: tree.rootSessionId });
+      return { ok: true, removedNodeIds: Array.from(removedIds) };
+    },
+  );
 }
+
+// Expose helpers used by tests / index.ts diagnostics.
+export function _internalState() { return state; }

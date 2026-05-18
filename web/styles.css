@@ -813,3 +813,173 @@ html, body, #root {
   font-size: 16px;
   padding: 0 4px;
 }
+
+/* === Tree-of-conversations UI === */
+
+/* Collapsed ancestor breadcrumbs above the current node. Stacked vertically;
+   each row is a single-line clickable affordance back up the tree. */
+.breadcrumb {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.breadcrumb-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  width: 100%;
+  transition: background 80ms ease;
+}
+.breadcrumb-item:hover {
+  background: var(--bg-elev);
+  color: var(--text);
+}
+.breadcrumb-depth {
+  flex: 0 0 auto;
+  font-weight: 600;
+  font-size: 11px;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+.breadcrumb-prompt {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Full-width branch buttons under each response. One row per child. */
+.branch-buttons {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+.branch-buttons-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.branch-button-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.branch-button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 80ms ease, border-color 80ms ease;
+}
+.branch-button:hover {
+  background: var(--bg-input);
+  border-color: var(--accent);
+}
+.branch-button-arrow {
+  color: var(--accent);
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.branch-button-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.branch-delete {
+  flex: 0 0 auto;
+  width: 32px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+}
+.branch-delete:hover {
+  background: rgba(255, 118, 118, 0.1);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* Inline "Ask about this" composer that replaces the selection toolbar
+   after the user clicks the toolbar's Explain button. Anchored to the
+   selected text, offsets handled by the component. */
+.explain-composer {
+  position: fixed;
+  z-index: 1500;
+  background: var(--bg-elev);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px;
+  width: 380px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+.explain-composer-quote {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg);
+  border-left: 2px solid var(--accent);
+  padding: 4px 8px;
+  margin-bottom: 8px;
+  max-height: 56px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.explain-composer textarea {
+  width: 100%;
+  min-height: 60px;
+  resize: vertical;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+}
+.explain-composer-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+.explain-composer-row button {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.explain-composer-row button.primary {
+  background: var(--accent-strong);
+  color: white;
+  border-color: var(--accent-strong);
+}
+.explain-composer-row button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { listTreeFiles, loadTree } from "./tree.ts";
 
 const PROJECTS_BASE = path.join(os.homedir(), ".claude", "projects");
 
@@ -40,6 +41,10 @@ export interface LoadedTurn {
   prompt: string;
   text: string;
   toolCalls: Array<{ toolName: string; toolUseId: string; partialJson: string; blockIndex: number }>;
+  // UUID of the last assistant message in this turn. Used as a fork point
+  // when a legacy linear conversation gets branched: we snapshot the .jsonl
+  // up to and including this uuid into a new session.
+  lastClaudeUuid?: string;
 }
 
 export interface LoadedSession {
@@ -52,6 +57,7 @@ interface RawLine {
   isSidechain?: boolean;
   aiTitle?: string;
   sessionId?: string;
+  uuid?: string;
   message?: {
     role?: string;
     content?: unknown;
@@ -119,23 +125,60 @@ async function readEntriesFromDir(dir: string): Promise<HistoryEntry[]> {
   return results;
 }
 
+// Walk every tree.json to map: sessionId → its role (root or fork). Forks
+// are .jsonl files Sherlock created when branching; they're meaningful only
+// within their tree and should NOT appear as standalone conversations in
+// history. Roots are still listed (one per conversation) so trees show up.
+async function buildSessionRoleMap(): Promise<{
+  roots: Set<string>;
+  forks: Set<string>;
+  nodeCountByRoot: Map<string, number>;
+}> {
+  const roots = new Set<string>();
+  const forks = new Set<string>();
+  const nodeCountByRoot = new Map<string, number>();
+  const treeFiles = await listTreeFiles();
+  for (const f of treeFiles) {
+    const rootSessionId = f.replace(/\.json$/, "");
+    const tree = await loadTree(rootSessionId);
+    if (!tree) continue;
+    roots.add(tree.rootSessionId);
+    nodeCountByRoot.set(tree.rootSessionId, Object.keys(tree.nodes).length);
+    for (const node of Object.values(tree.nodes)) {
+      if (node.sessionId !== tree.rootSessionId) forks.add(node.sessionId);
+    }
+  }
+  return { roots, forks, nodeCountByRoot };
+}
+
 export async function listHistory(_cwd: string): Promise<HistoryEntry[]> {
   // _cwd is ignored — we scan ALL Sherlock project dirs and merge so the
   // sidebar shows history regardless of which cwd Sherlock was launched in.
-  const dirs = await findSherlockProjectDirs();
+  const [dirs, { forks, nodeCountByRoot }] = await Promise.all([
+    findSherlockProjectDirs(),
+    buildSessionRoleMap(),
+  ]);
   const perDir = await Promise.all(dirs.map(readEntriesFromDir));
   const all: HistoryEntry[] = [];
   const seen = new Set<string>();
   for (const list of perDir) {
     for (const entry of list) {
       if (seen.has(entry.sessionId)) continue;
+      // Hide fork sessions: they're internal to a tree, not standalone.
+      if (forks.has(entry.sessionId)) continue;
       seen.add(entry.sessionId);
+      // For sessions that are tree roots, prefer the tree's node count
+      // over the .jsonl's turn count (the .jsonl only has THIS path's turns;
+      // the tree may have more across forks).
+      const treeNodeCount = nodeCountByRoot.get(entry.sessionId);
+      if (treeNodeCount !== undefined) entry.turnCount = treeNodeCount;
       all.push(entry);
     }
   }
   all.sort((a, b) => b.lastModifiedAt - a.lastModifiedAt);
   return all;
 }
+
 
 export async function loadSession(_cwd: string, sessionId: string): Promise<LoadedSession | null> {
   // Search every Sherlock project dir for this sessionId.
@@ -198,6 +241,10 @@ function parseSessionJsonl(sessionId: string, raw: string): LoadedSession {
         }
         // thinking blocks: ignored on purpose — internal reasoning, not shown.
       }
+      // Record this assistant message's uuid as the running "tail" of the
+      // current turn. The last one wins, which is what we want: the final
+      // assistant message before the next user prompt.
+      if (typeof obj.uuid === "string") current.lastClaudeUuid = obj.uuid;
     }
   }
   if (current !== null) turns.push(current);

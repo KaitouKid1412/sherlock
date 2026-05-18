@@ -1,30 +1,18 @@
-import { useState, type KeyboardEvent } from "react";
+import { type KeyboardEvent } from "react";
 
 interface Props {
-  showInlineButton: boolean;
   onSend: () => void | Promise<void>;
-  onSendInNewColumn: () => void | Promise<void>;
   placeholder?: string;
   value: string;
   onChange: (v: string) => void;
+  disabled?: boolean;
 }
 
-export function InputBar({
-  showInlineButton,
-  onSend,
-  onSendInNewColumn,
-  placeholder,
-  value,
-  onChange,
-}: Props) {
+export function InputBar({ onSend, placeholder, value, onChange, disabled }: Props) {
   const handleKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      if (e.shiftKey || !showInlineButton) {
-        onSendInNewColumn();
-      } else {
-        onSend();
-      }
+      if (!disabled) onSend();
     }
   };
   return (
@@ -34,30 +22,18 @@ export function InputBar({
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={handleKey}
         placeholder={placeholder ?? "Ask anything…"}
+        disabled={disabled}
       />
       <div className="row">
-        {showInlineButton ? (
-          <button
-            className="primary"
-            disabled={value.trim().length === 0}
-            onClick={() => onSend()}
-          >
-            Send
-          </button>
-        ) : null}
         <button
-          className={showInlineButton ? "" : "primary"}
-          disabled={value.trim().length === 0}
-          onClick={() => onSendInNewColumn()}
+          className="primary"
+          disabled={disabled || value.trim().length === 0}
+          onClick={() => onSend()}
         >
-          Continue in new column
+          Send
         </button>
       </div>
-      <div className="hint">
-        {showInlineButton
-          ? "⌘↵ Send · ⌘⇧↵ New column"
-          : "⌘↵ New column"}
-      </div>
+      <div className="hint">⌘↵ Send</div>
     </div>
   );
 }
