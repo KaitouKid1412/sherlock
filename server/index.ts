@@ -36,21 +36,20 @@ fastify.post("/api/heartbeat", async () => {
   return { ok: true };
 });
 
-// Update status: launcher.sh writes this file as it runs the background update.
-// We expose it so the sidebar can show "Updating..." / "Updated" indicators.
+// Update status: launcher.sh + install.sh write this file as updates happen.
+// Sidebar polls and shows "Updating…" / "✓ Updated at HH:MM".
 fastify.get("/api/update-status", async () => {
   try {
     const content = await readFile(UPDATE_STATUS_FILE, "utf8");
-    const data = JSON.parse(content) as { state?: string; at?: number };
-    const state = data.state;
-    const ageMs = Date.now() - (data.at ?? 0) * 1000;
-    if (state === "updating" && ageMs < 5 * 60_000) {
-      return { state: "updating" };
+    const data = JSON.parse(content) as { state?: string; at?: number; head?: string };
+    if (!data.state || !data.at) return { state: "idle" };
+    const ageMs = Date.now() - data.at * 1000;
+    // Treat a stuck "updating" (>5 min old) as idle so the indicator self-clears
+    // if the launcher's background update crashed before writing "updated".
+    if (data.state === "updating" && ageMs > 5 * 60_000) {
+      return { state: "idle" };
     }
-    if (state === "updated" && ageMs < 30_000) {
-      return { state: "updated" };
-    }
-    return { state: "idle" };
+    return { state: data.state, at: data.at, head: data.head };
   } catch {
     return { state: "idle" };
   }

@@ -450,8 +450,14 @@ html, body, #root {
   letter-spacing: 0.2px;
   color: var(--text-dim);
 }
-.sidebar-update-status--updated {
+.sidebar-update-status--fresh {
   color: #4a9d6e;
+  transition: color 0.6s ease;
+}
+.sidebar-update-status--old {
+  color: var(--text-dim);
+  opacity: 0.75;
+  transition: color 0.6s ease, opacity 0.6s ease;
 }
 .sidebar-update-dot {
   display: inline-block;

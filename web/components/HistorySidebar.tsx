@@ -20,11 +20,26 @@ function formatRelative(ms: number): string {
 }
 
 type UpdateState = "idle" | "updating" | "updated";
+interface UpdateStatus {
+  state: UpdateState;
+  at?: number;
+  head?: string;
+}
+
+function formatTime(unixSec: number): string {
+  return new Date(unixSec * 1000).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+const UPDATED_FRESH_WINDOW_MS = 30_000;
 
 export function HistorySidebar({ collapsed, onToggle }: Props) {
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
-  const [updateState, setUpdateState] = useState<UpdateState>("idle");
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
+  const [now, setNow] = useState<number>(Date.now());
   const currentSessionId = usePanes((s) => s.sessionId);
   const panes = usePanes((s) => s.panes);
   const loadHistorySession = usePanes((s) => s.loadHistorySession);
@@ -44,8 +59,8 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
       try {
         const res = await fetch("/api/update-status");
         if (!res.ok) return;
-        const data = (await res.json()) as { state: UpdateState };
-        if (!cancelled) setUpdateState(data.state);
+        const data = (await res.json()) as UpdateStatus;
+        if (!cancelled) setUpdateStatus(data);
       } catch {
         /* ignore — server may be momentarily unreachable */
       }
@@ -57,6 +72,14 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
       window.clearInterval(id);
     };
   }, []);
+
+  // Keep `now` ticking so the "fresh" → "old" visual transition happens on time
+  // without waiting for the next poll. 1Hz is plenty for the 30s window.
+  useEffect(() => {
+    if (!updateStatus.at) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [updateStatus.at]);
 
   const handleLoad = async (sessionId: string) => {
     if (sessionId === currentSessionId) return;
@@ -116,18 +139,24 @@ export function HistorySidebar({ collapsed, onToggle }: Props) {
             ‹
           </button>
         </div>
-        {updateState !== "idle" ? (
+        {updateStatus.state === "updating" ? (
           <span
-            className={`sidebar-update-status sidebar-update-status--${updateState}`}
-            title={updateState === "updating" ? "Sherlock is pulling the latest release" : "Update applied — fully active on next launch"}
+            className="sidebar-update-status sidebar-update-status--updating"
+            title="Sherlock is pulling the latest release in the background"
           >
-            {updateState === "updating" ? (
-              <>
-                <span className="sidebar-update-dot" aria-hidden /> Updating…
-              </>
-            ) : (
-              <>✓ Updated</>
-            )}
+            <span className="sidebar-update-dot" aria-hidden /> Updating…
+          </span>
+        ) : updateStatus.state === "updated" && updateStatus.at ? (
+          <span
+            className={
+              "sidebar-update-status " +
+              (now - updateStatus.at * 1000 < UPDATED_FRESH_WINDOW_MS
+                ? "sidebar-update-status--fresh"
+                : "sidebar-update-status--old")
+            }
+            title={`Last applied: ${new Date(updateStatus.at * 1000).toLocaleString()}${updateStatus.head ? ` (${updateStatus.head.slice(0, 7)})` : ""}`}
+          >
+            ✓ Updated at {formatTime(updateStatus.at)}
           </span>
         ) : null}
         {currentSessionId ? (

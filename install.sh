@@ -109,7 +109,13 @@ say "Installing Sherlock.app into $APPLICATIONS"
 rm -rf "$APPLICATIONS/Sherlock.app"
 cp -R "$APP_DIR/packaging/Sherlock.app" "$APPLICATIONS/Sherlock.app"
 
-# 9. Done
+# 9. Seed the update-status marker so the sidebar shows "Updated at HH:MM"
+#    immediately after install (instead of waiting for the first real
+#    background self-update from `release`).
+HEAD_SHA="$(git -C "$APP_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+printf '{"state":"updated","at":%s,"head":"%s"}\n' "$(date +%s)" "$HEAD_SHA" > "$APP_DIR/.update-status"
+
+# 10. Done
 cat <<EOF
 
 \033[1;32m✓ Sherlock installed.\033[0m
