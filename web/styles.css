@@ -826,6 +826,32 @@ html, body, #root {
   padding: 0 4px;
 }
 
+/* Error states on a tree node. Two flavors: full failure (no text) and
+   partial failure (some text streamed before the model exited). */
+.turn-error {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 118, 118, 0.4);
+  border-radius: 6px;
+  background: rgba(255, 118, 118, 0.08);
+  color: var(--danger);
+  font-size: 13px;
+}
+.turn-error-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.turn-error-tag {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 118, 118, 0.3);
+  border-radius: 4px;
+  background: rgba(255, 118, 118, 0.06);
+  color: var(--danger);
+  font-size: 12px;
+}
+
 /* === Tree-of-conversations UI === */
 
 /* Collapsed ancestor breadcrumbs above the current node. Stacked vertically;

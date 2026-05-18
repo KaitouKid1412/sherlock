@@ -352,7 +352,16 @@ export const usePanes = create<PaneStore>((set, get) => ({
     if (!tree) return;
     const res = await fetch(`/api/tree/${tree.rootSessionId}/nodes/${nodeId}`, { method: "DELETE" });
     if (!res.ok) {
-      set({ error: `delete failed: ${await res.text()}` });
+      // "Node not in tree" usually means our frontend cached an in-flight
+      // node that never got persisted (e.g. server restarted before the
+      // turn finished). Repair by rehydrating server state — that drops
+      // the phantom node and the user can move on.
+      const body = await res.text().catch(() => "");
+      if (res.status === 404) {
+        await get().hydrate();
+        return;
+      }
+      set({ error: `delete failed: ${body}` });
       return;
     }
     // Refetch after deletion — tree shape and pane currentNodeIds may have shifted.

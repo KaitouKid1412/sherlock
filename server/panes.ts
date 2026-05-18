@@ -192,7 +192,27 @@ async function addChildNode(parentNodeId: string, prompt: string): Promise<TreeN
   }
 
   const child = addNode(tree, parentNodeId, childSessionId, prompt);
+  // Persist IMMEDIATELY — not just on turn completion. If the server gets
+  // killed mid-stream (auto-update, crash, kill+relaunch), we want the
+  // in-progress node to survive on disk so the next /load brings it back.
+  // Without this, the frontend would show a node the server's restarted
+  // tree no longer knows about, and any /send or /delete against it would
+  // fail with "node not there".
+  void saveTree(tree);
   return child;
+}
+
+// If a request comes in for a tree we don't have loaded (server got
+// restarted but the frontend still has it in state), lazy-load from disk
+// before serving the request. Avoids 404s on /send /delete /navigate after
+// a transparent restart.
+async function ensureTreeLoaded(rootSessionId: string): Promise<boolean> {
+  if (state.tree && state.tree.rootSessionId === rootSessionId) return true;
+  const tree = await loadTree(rootSessionId);
+  if (!tree) return false;
+  state.rootSessionId = tree.rootSessionId;
+  state.tree = tree;
+  return true;
 }
 
 export function registerPaneRoutes(fastify: FastifyInstance): void {
@@ -386,9 +406,12 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
   fastify.delete<{ Params: { rootSessionId: string; nodeId: string } }>(
     "/api/tree/:rootSessionId/nodes/:nodeId",
     async (req, reply) => {
-      if (!state.tree || state.tree.rootSessionId !== req.params.rootSessionId) {
+      // Lazy-load: if the server restarted and lost in-memory state but the
+      // frontend still has the tree, transparently re-hydrate from disk.
+      const loaded = await ensureTreeLoaded(req.params.rootSessionId);
+      if (!loaded || !state.tree) {
         reply.code(404);
-        return { error: "tree not loaded or mismatched root" };
+        return { error: "tree not found" };
       }
       const tree = state.tree;
       const target = tree.nodes[req.params.nodeId];

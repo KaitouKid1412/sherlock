@@ -129,9 +129,23 @@ function NodeView({ node, toolCalls, isRoot }: { node: TreeNodePublic; toolCalls
       ) : null}
       <div className={`turn-answer${node.status === "streaming" ? " streaming" : ""}`}>
         {node.text.length > 0 ? (
-          <MarkdownMessage text={node.text} />
+          <>
+            <MarkdownMessage text={node.text} />
+            {node.status === "error" ? (
+              <div className="turn-error-tag" title="The model exited mid-response. The text above is what was generated before it stopped.">
+                ⚠ Response ended with an error — generation was interrupted.
+              </div>
+            ) : null}
+          </>
         ) : node.status === "queued" ? (
           <span style={{ color: "var(--text-dim)" }}>queued — will start when previous turn finishes</span>
+        ) : node.status === "error" ? (
+          <div className="turn-error">
+            ⚠ Generation failed before any response was produced.
+            <div className="turn-error-hint">
+              This usually means the underlying Claude Code session couldn't be resumed. Delete this branch (× button) and try again.
+            </div>
+          </div>
         ) : (
           <span style={{ color: "var(--text-dim)" }}>…</span>
         )}
