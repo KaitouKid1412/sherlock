@@ -84,6 +84,16 @@ if ! mkdir "$START_LOCK" 2>/dev/null; then
 fi
 trap 'rmdir "$START_LOCK" 2>/dev/null || true' EXIT
 
+# Ensure dist/ is fresh before serving it. The background-update path
+# rebuilds when commits arrive, but stale dist/ can still happen after a
+# migration (old installer pulled code without building) or if dist/ was
+# manually deleted. This check is cheap when dist/ is current (~50ms find).
+if [ ! -f "$APP_DIR/dist/index.html" ] \
+   || [ -n "$(find "$APP_DIR/web" "$APP_DIR/types" "$APP_DIR/package.json" -newer "$APP_DIR/dist/index.html" 2>/dev/null | head -1)" ]; then
+  echo "dist/ is stale or missing; rebuilding frontend (~1s)"
+  ( cd "$APP_DIR" && npm run build --silent 2>&1 ) || echo "WARN: build failed; serving previous dist/"
+fi
+
 # Start the server detached — it opens its own browser on boot.
 echo "starting server"
 rm -f "$PORT_FILE"
