@@ -238,6 +238,17 @@ export const usePanes = create<PaneStore>((set, get) => ({
             error: ev.message,
           };
         }
+        case "panes_updated": {
+          // Canonical snapshot from the server — includes any auto-evictions
+          // (we cap at MAX_PANES on the server side). Replace local state.
+          return {
+            panes: ev.panes.map((p) => ({
+              paneId: p.paneId,
+              rootSessionId: p.rootSessionId,
+              currentNodeId: p.currentNodeId,
+            })),
+          };
+        }
         case "session_ready":
           return {};
         default:

@@ -9,7 +9,8 @@ export type ServerSentEvent =
   | { type: "done"; turnId: string; result: string; costUsd?: number }
   | { type: "error"; turnId?: string; message: string }
   | { type: "node_added"; node: TreeNodePublic }
-  | { type: "tree_updated"; rootSessionId: string };
+  | { type: "tree_updated"; rootSessionId: string }
+  | { type: "panes_updated"; panes: PanePublic[] };
 
 export type TurnStatus = "queued" | "streaming" | "done" | "error" | "cancelled";
 

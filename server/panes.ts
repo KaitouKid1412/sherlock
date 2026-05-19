@@ -60,13 +60,35 @@ function broadcast(ev: ServerSentEvent): void {
   for (const s of state.subscribers) s.send(ev);
 }
 
+// Hard cap on visible columns. More than two makes the UI cramped to read.
+// When we'd exceed it, close the oldest pane that ISN'T the source of the
+// new pane — never yank the column the user is actively spawning from.
+const MAX_PANES = 2;
+
+function evictUntilUnderCap(sourcePaneId?: string): void {
+  while (state.panes.length >= MAX_PANES) {
+    // panes[0] is reliably the oldest because new panes are inserted to the
+    // right of their source and never before index 0. If panes[0] is the
+    // source we're spawning from, look further right for the eviction target.
+    let evictIdx = 0;
+    if (sourcePaneId && state.panes[0]!.paneId === sourcePaneId) {
+      evictIdx = state.panes.length > 1 ? 1 : 0;
+    }
+    state.panes.splice(evictIdx, 1);
+  }
+}
+
 function createPane(currentNodeId: string | null, afterPaneId?: string): PaneState {
+  evictUntilUnderCap(afterPaneId);
   const pane: PaneState = {
     paneId: randomUUID(),
     rootSessionId: state.rootSessionId,
     currentNodeId,
     createdAt: Date.now(),
   };
+  // Re-resolve the source index AFTER eviction; if the source got evicted
+  // (shouldn't happen with the smart rule, but defend against drift) we just
+  // append.
   if (afterPaneId) {
     const idx = state.panes.findIndex((p) => p.paneId === afterPaneId);
     if (idx >= 0) {
@@ -78,6 +100,10 @@ function createPane(currentNodeId: string | null, afterPaneId?: string): PaneSta
     state.panes.push(pane);
   }
   return pane;
+}
+
+function broadcastPanes(): void {
+  broadcast({ type: "panes_updated", panes: state.panes.map((p) => ({ ...p })) });
 }
 
 function turnFromNode(node: TreeNodePublic): TurnState {
@@ -233,6 +259,7 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
     state.tree = createTree(rootSessionId, prompt);
     const root = state.tree.nodes[state.tree.rootNodeId]!;
     const pane = createPane(root.nodeId);
+    broadcastPanes();
     broadcast({ type: "node_added", node: root });
     broadcast({ type: "turn_started", turnId: root.nodeId, prompt: root.prompt, status: root.status, nodeId: root.nodeId });
     if (state.running.size === 0) {
@@ -304,6 +331,7 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
       const startNodeId = req.body?.currentNodeId ?? state.tree.rootNodeId;
       if (!state.tree.nodes[startNodeId]) { reply.code(404); return { error: "currentNodeId not in tree" }; }
       const pane = createPane(startNodeId, req.body?.afterPaneId);
+      broadcastPanes();
       return { paneId: pane.paneId, currentNodeId: pane.currentNodeId };
     },
   );
@@ -375,6 +403,7 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
     state.rootSessionId = tree.rootSessionId;
     state.tree = tree;
     const pane = createPane(tree.rootNodeId);
+    broadcastPanes();
     return { paneId: pane.paneId, rootSessionId: tree.rootSessionId, rootNodeId: tree.rootNodeId };
   });
 
@@ -382,6 +411,7 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
     const idx = state.panes.findIndex((p) => p.paneId === req.params.id);
     if (idx === -1) { reply.code(404); return { error: "pane not found" }; }
     state.panes.splice(idx, 1);
+    broadcastPanes();
     // Closing a pane never affects the tree or any running turn (turns are
     // bound to node IDs, not pane IDs).
     return { ok: true };
@@ -418,6 +448,7 @@ export function registerPaneRoutes(fastify: FastifyInstance): void {
       );
       const closedIds = new Set(panesToClose.map((p) => p.paneId));
       state.panes = state.panes.filter((p) => !closedIds.has(p.paneId));
+      if (closedIds.size > 0) broadcastPanes();
       // Delete the underlying Claude Code .jsonl for any session that's now
       // unreferenced. The root session stays because deleting it would
       // effectively delete the conversation; that's handled by /new.
